@@ -102,7 +102,7 @@ class LoginWindow(QWidget):
             QMessageBox.information(self, "Succès", "Connexion réussie !")
 
     def open_register(self):
-        from interfaces.register_window import RegisterWindow
+        from interfaces.account.register_window import RegisterWindow
         self.register_window = RegisterWindow(parent=self)
         self.register_window.show()
         self.close()

@@ -1,7 +1,9 @@
 import sys
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QFont  # <--- N'oublie pas d'importer QFont
-from interfaces.login_window import LoginWindow
+from interfaces.account.login_window import LoginWindow
+# from interfaces.admin.admin_dashboard import AdminDashboard
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
