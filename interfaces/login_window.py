@@ -1,4 +1,5 @@
 from PyQt5.QtWidgets import QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QMessageBox
+from interfaces.register_window import RegisterWindow
 
 class LoginWindow(QWidget):
     def __init__(self):
@@ -13,6 +14,7 @@ class LoginWindow(QWidget):
         self.input_pass = QLineEdit()
         self.input_pass.setEchoMode(QLineEdit.Password)
         self.button_login = QPushButton("Se connecter")
+        self.button_register = QPushButton("Créer un compte")
 
         # Layout vertical
         layout = QVBoxLayout()
@@ -21,10 +23,17 @@ class LoginWindow(QWidget):
         layout.addWidget(self.label_pass)
         layout.addWidget(self.input_pass)
         layout.addWidget(self.button_login)
+        layout.addWidget(self.button_register)
         self.setLayout(layout)
 
-        # Connexion du bouton à la fonction de vérification
+        # Connexion des boutons à leurs fonctions
         self.button_login.clicked.connect(self.check_login)
+        self.button_register.clicked.connect(self.open_register)
+
+    def open_register(self):
+        self.register_window = RegisterWindow(parent=self)
+        self.register_window.show()
+        self.close()
 
     def check_login(self):
         username = self.input_user.text()
