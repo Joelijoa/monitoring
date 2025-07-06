@@ -1,5 +1,10 @@
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QStackedWidget, QFrame, QMenu
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QCursor
+from monitoring.interfaces.admin.surveillance_page import SurveillancePage
+from monitoring.interfaces.admin.user_activity_page import UserActivityPage
+from monitoring.interfaces.admin.predictive_page import PredictivePage
+from monitoring.interfaces.admin.vpn_page import VPNPage
 
 class AdminDashboard(QWidget):
     def __init__(self):
@@ -32,7 +37,7 @@ class AdminDashboard(QWidget):
                     background-color: #40739e;
                 }
             """)
-            btn.setCursor(Qt.PointingHandCursor)
+            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             sidebar_layout.addWidget(btn)
             self.buttons.append(btn)
         sidebar_layout.addStretch()
@@ -41,7 +46,29 @@ class AdminDashboard(QWidget):
         # --------- Zone de contenu (QStackedWidget) ---------
         self.stack = QStackedWidget()
         self.pages = []
-        for section in sections:
+        
+        # Page de surveillance spéciale
+        surveillance_page = SurveillancePage()
+        self.stack.addWidget(surveillance_page)
+        self.pages.append(surveillance_page)
+        
+        # Page d'activité utilisateur spéciale
+        user_activity_page = UserActivityPage()
+        self.stack.addWidget(user_activity_page)
+        self.pages.append(user_activity_page)
+        
+        # Page d'analyse prédictive spéciale
+        predictive_page = PredictivePage()
+        self.stack.addWidget(predictive_page)
+        self.pages.append(predictive_page)
+        
+        # Page VPN spéciale
+        vpn_page = VPNPage()
+        self.stack.addWidget(vpn_page)
+        self.pages.append(vpn_page)
+        
+        # Autres pages
+        for section in sections[4:]:  # Skip les 4 premières sections car déjà ajoutées
             page = QWidget()
             layout = QVBoxLayout()
             layout.addWidget(QLabel(f"Contenu de la section : {section}"))
@@ -74,7 +101,7 @@ class AdminDashboard(QWidget):
         header_layout = QHBoxLayout()
         header_layout.addStretch()
         header_layout.addWidget(profile_button)
-        header_layout.setAlignment(profile_button, Qt.AlignRight)
+        header_layout.setAlignment(profile_button, Qt.AlignmentFlag.AlignRight)
 
         # --------- Layout principal ---------
         content_layout = QVBoxLayout()

@@ -34,3 +34,5 @@ class LoginWindow(QWidget):
             QMessageBox.information(self, "Succès", "Connexion réussie !")
         else:
             QMessageBox.warning(self, "Erreur", "Nom d'utilisateur ou mot de passe incorrect.")
+
+# Package des interfaces utilisateur
