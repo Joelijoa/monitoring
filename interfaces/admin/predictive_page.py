@@ -16,6 +16,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
 from monitoring.services.predictive_service import PredictiveService
 from monitoring.config.predictive_config import ANOMALY_TYPES, REFRESH_INTERVALS
+import qtawesome as qta
 
 class PredictivePage(QWidget):
     def __init__(self):
@@ -28,21 +29,23 @@ class PredictivePage(QWidget):
         self.setup_timers()
         
     def setup_ui(self):
+        self.setStyleSheet("font-family: 'Roboto', 'Segoe UI', Arial, sans-serif; background: #F5F6FA;")
         layout = QVBoxLayout()
         
         # Titre et description
         title = QLabel("Détection Anomalies via Isolation Forest")
-        title.setFont(QFont("Arial", 18, QFont.Bold))
-        title.setStyleSheet("color: #2c3e50; margin: 10px;")
+        title.setFont(QFont("Roboto", 22, QFont.Bold))
+        title.setStyleSheet("color: #39396A; margin: 10px 0 0 10px;")
         layout.addWidget(title)
         
         desc = QLabel("Analyse horaire sur logs Wazuh/ELK - Réentraînement mensuel - Score < 0.3 = suspect")
-        desc.setStyleSheet("color: #7f8c8d; margin-bottom: 20px;")
+        desc.setFont(QFont("Roboto", 13, QFont.Normal))
+        desc.setStyleSheet("color: #39396A; margin-left: 12px; margin-bottom: 10px;")
         layout.addWidget(desc)
         
         # Statut de l'analyse
         self.analysis_status = QLabel("Statut de l'analyse: Initialisation...")
-        self.analysis_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        self.analysis_status.setStyleSheet("color: #e74c3c; font-weight: bold; margin-left: 12px;")
         layout.addWidget(self.analysis_status)
         
         # Contrôles de filtrage et actions
@@ -51,6 +54,7 @@ class PredictivePage(QWidget):
         # Filtre par type d'anomalie
         self.anomaly_filter_combo = QComboBox()
         self.anomaly_filter_combo.addItems(["Toutes", "Comportement", "Réseau", "Système", "Utilisateur"])
+        self.anomaly_filter_combo.setStyleSheet("background: #F8F9FA; border-radius: 6px; padding: 4px 8px;")
         self.anomaly_filter_combo.currentTextChanged.connect(self.apply_filters)
         controls_layout.addWidget(QLabel("Type:"))
         controls_layout.addWidget(self.anomaly_filter_combo)
@@ -58,79 +62,84 @@ class PredictivePage(QWidget):
         # Filtre par score
         self.score_filter_combo = QComboBox()
         self.score_filter_combo.addItems(["Tous", "Suspects (< 0.3)", "Normaux (≥ 0.3)"])
+        self.score_filter_combo.setStyleSheet("background: #F8F9FA; border-radius: 6px; padding: 4px 8px;")
         self.score_filter_combo.currentTextChanged.connect(self.apply_filters)
         controls_layout.addWidget(QLabel("Score:"))
         controls_layout.addWidget(self.score_filter_combo)
         
         # Boutons d'export
-        export_csv_btn = QPushButton("Export CSV")
+        export_csv_btn = QPushButton(qta.icon('fa5s.file-csv', color='#39396A'), "Exporter CSV")
         export_csv_btn.clicked.connect(self.export_csv)
-        export_csv_btn.setStyleSheet("""
+        export_csv_btn.setStyleSheet('''
             QPushButton {
-                background-color: #27ae60;
-                color: white;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFD94A, stop:1 #D96B8A);
+                color: #39396A;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                border-radius: 8px;
+                padding: 8px 18px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #229954;
+                background: #FFD94A;
+                color: #39396A;
             }
-        """)
+        ''')
         controls_layout.addWidget(export_csv_btn)
         
-        export_pdf_btn = QPushButton("Export PDF")
+        export_pdf_btn = QPushButton(qta.icon('fa5s.file-pdf', color='#39396A'), "Exporter PDF")
         export_pdf_btn.clicked.connect(self.export_pdf)
-        export_pdf_btn.setStyleSheet("""
+        export_pdf_btn.setStyleSheet('''
             QPushButton {
-                background-color: #e74c3c;
-                color: white;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFD94A, stop:1 #D96B8A);
+                color: #39396A;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                border-radius: 8px;
+                padding: 8px 18px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #c0392b;
+                background: #FFD94A;
+                color: #39396A;
             }
-        """)
+        ''')
         controls_layout.addWidget(export_pdf_btn)
         
         # Bouton d'analyse manuelle
-        analyze_btn = QPushButton("🔍 Analyser Maintenant")
+        analyze_btn = QPushButton(qta.icon('fa5s.search', color='#39396A'), "Analyser Maintenant")
         analyze_btn.clicked.connect(self.run_analysis)
-        analyze_btn.setStyleSheet("""
+        analyze_btn.setStyleSheet('''
             QPushButton {
-                background-color: #3498db;
-                color: white;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFD94A, stop:1 #D96B8A);
+                color: #39396A;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                border-radius: 8px;
+                padding: 8px 18px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #2980b9;
+                background: #FFD94A;
+                color: #39396A;
             }
-        """)
+        ''')
         controls_layout.addWidget(analyze_btn)
         
         # Bouton d'entraînement
-        train_btn = QPushButton("🎓 Réentraîner")
+        train_btn = QPushButton(qta.icon('fa5s.brain', color='#39396A'), "Réentraîner")
         train_btn.clicked.connect(self.train_models)
-        train_btn.setStyleSheet("""
+        train_btn.setStyleSheet('''
             QPushButton {
-                background-color: #f39c12;
-                color: white;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFD94A, stop:1 #D96B8A);
+                color: #39396A;
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                border-radius: 8px;
+                padding: 8px 18px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #e67e22;
+                background: #FFD94A;
+                color: #39396A;
             }
-        """)
+        ''')
         controls_layout.addWidget(train_btn)
         
         controls_layout.addStretch()
@@ -198,8 +207,8 @@ class PredictivePage(QWidget):
                 alternate-background-color: #f8f9fa;
             }
             QHeaderView::section {
-                background-color: #34495e;
-                color: white;
+                background-color: #39396A;
+                color: #FFD94A;
                 padding: 8px;
                 border: 1px solid #2c3e50;
                 font-weight: bold;

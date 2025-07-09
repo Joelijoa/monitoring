@@ -4,6 +4,26 @@ from PyQt5.QtGui import QFont, QColor
 from monitoring.services.backup_service import BackupService
 from datetime import datetime, timedelta
 import json
+import qtawesome as qta
+
+# Palette harmonisée
+PALETTE = {
+    'main_bg': '#F5F6FA',
+    'header': '#39396A',
+    'header_text': '#FFD94A',
+    'table_header': '#39396A',
+    'table_header_text': '#FFD94A',
+    'row_alt': '#F8F9FA',
+    'row_bg': '#FFFFFF',
+    'status_normal': '#27ae60',
+    'status_attention': '#F7B55E',
+    'status_critique': '#e74c3c',
+    'status_text': '#fff',
+    'btn_gradient': 'qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFD94A, stop:1 #D96B8A)',
+    'btn_text': '#39396A',
+    'accent': '#FFD94A',
+    'font': 'Roboto, Segoe UI, Arial, sans-serif',
+}
 
 class RestoreDialog(QDialog):
     def __init__(self, job_name: str, parent=None):
@@ -173,69 +193,62 @@ class BackupPage(QWidget):
         self.setup_timers()
         
     def setup_ui(self):
+        self.setStyleSheet(f"font-family: {PALETTE['font']}; background: {PALETTE['main_bg']};")
         layout = QVBoxLayout()
-        
         # Titre et description
         title = QLabel("Gestion des Sauvegardes Bacula")
-        title.setFont(QFont("Arial", 18, QFont.Bold))
-        title.setStyleSheet("color: #2c3e50; margin: 10px;")
+        title.setFont(QFont("Roboto", 22, QFont.Bold))
+        title.setStyleSheet(f"color: {PALETTE['header']}; margin: 10px 0 0 10px;")
         layout.addWidget(title)
-        
         desc = QLabel("Planification, suivi et restauration des sauvegardes Bacula. Alertes Wazuh en cas d'échec.")
-        desc.setStyleSheet("color: #7f8c8d; margin-bottom: 20px;")
+        desc.setFont(QFont("Roboto", 13, QFont.Normal))
+        desc.setStyleSheet(f"color: {PALETTE['header']}; margin-left: 12px; margin-bottom: 10px;")
         layout.addWidget(desc)
-        
-        # Statut de la connexion
         self.connection_status = QLabel("Statut de la connexion: Vérification...")
-        self.connection_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        self.connection_status.setStyleSheet(f"color: {PALETTE['status_critique']}; font-weight: bold; margin-left: 12px;")
         layout.addWidget(self.connection_status)
-        
-        # Contrôles principaux
         controls_layout = QHBoxLayout()
-        
-        # Bouton planifier
-        add_btn = QPushButton("➕ Planifier une sauvegarde")
+        add_btn = QPushButton(qta.icon('fa5s.plus', color=PALETTE['btn_text']), "Planifier une sauvegarde")
         add_btn.clicked.connect(self.add_backup_job)
-        add_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27ae60;
-                color: white;
+        add_btn.setStyleSheet(f'''
+            QPushButton {{
+                background: {PALETTE['btn_gradient']};
+                color: {PALETTE['btn_text']};
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                border-radius: 8px;
+                padding: 8px 18px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #229954;
-            }
-        """)
+            }}
+            QPushButton:hover {{
+                background: {PALETTE['accent']};
+                color: {PALETTE['header']};
+            }}
+        ''')
         controls_layout.addWidget(add_btn)
-        
-        # Bouton rafraîchir
-        refresh_btn = QPushButton("🔄 Rafraîchir")
+        refresh_btn = QPushButton(qta.icon('fa5s.sync', color=PALETTE['btn_text']), "Rafraîchir")
         refresh_btn.clicked.connect(self.load_jobs)
-        refresh_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3498db;
-                color: white;
+        refresh_btn.setStyleSheet(f'''
+            QPushButton {{
+                background: {PALETTE['btn_gradient']};
+                color: {PALETTE['btn_text']};
                 border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
+                border-radius: 8px;
+                padding: 8px 18px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-        """)
+            }}
+            QPushButton:hover {{
+                background: {PALETTE['accent']};
+                color: {PALETTE['header']};
+            }}
+        ''')
         controls_layout.addWidget(refresh_btn)
-        
-        # Filtre par statut
+        # Correction : création du ComboBox avant le style
         self.status_filter_combo = QComboBox()
         self.status_filter_combo.addItems(["Tous", "Success", "Failed", "Running", "Scheduled"])
         self.status_filter_combo.currentTextChanged.connect(self.apply_filters)
+        self.status_filter_combo.setStyleSheet(f"background: {PALETTE['row_alt']}; border-radius: 6px; padding: 4px 8px;")
         controls_layout.addWidget(QLabel("Statut:"))
         controls_layout.addWidget(self.status_filter_combo)
-        
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
         
