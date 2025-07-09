@@ -3,24 +3,53 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QFrame, QComboBox, QPushButton, QGroupBox,
                              QProgressBar, QSplitter, QDialog, QLineEdit,
                              QTextEdit, QFormLayout, QMessageBox, QFileDialog)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont, QColor
 import requests
 import json
 from datetime import datetime
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import numpy as np
+import subprocess
+import platform
 from monitoring.services.vpn_service import VPNService
 from monitoring.config.vpn_config import VPN_USER_TYPES, VPN_STATUS, REFRESH_INTERVALS
 
-class CreateUserDialog(QDialog):
+class PingThread(QThread):
+    """Thread pour tester la connectivité ping"""
+    ping_result = pyqtSignal(str, bool, str)  # IP, success, response_time
+    
+    def __init__(self, ip_address):
+        super().__init__()
+        self.ip_address = ip_address
+        
+    def run(self):
+        try:
+            if platform.system().lower() == "windows":
+                cmd = ["ping", "-n", "1", "-w", "1000", self.ip_address]
+            else:
+                cmd = ["ping", "-c", "1", "-W", "1", self.ip_address]
+                
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            
+            if result.returncode == 0:
+                # Extraire le temps de réponse
+                output = result.stdout
+                if "time=" in output:
+                    time_part = output.split("time=")[1].split()[0]
+                    self.ping_result.emit(self.ip_address, True, time_part)
+                else:
+                    self.ping_result.emit(self.ip_address, True, "OK")
+            else:
+                self.ping_result.emit(self.ip_address, False, "Timeout")
+                
+        except Exception as e:
+            self.ping_result.emit(self.ip_address, False, str(e))
+
+class ManualRuleDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Créer un nouvel utilisateur VPN")
+        self.setWindowTitle("Ajouter une Règle Manuelle")
         self.setModal(True)
-        self.resize(400, 300)
+        self.resize(500, 300)
         self.setup_ui()
         
     def setup_ui(self):
@@ -29,30 +58,31 @@ class CreateUserDialog(QDialog):
         # Formulaire
         form_layout = QFormLayout()
         
-        # ID utilisateur
-        self.user_id_edit = QLineEdit()
-        self.user_id_edit.setPlaceholderText("ex: john.doe")
-        form_layout.addRow("ID Utilisateur:", self.user_id_edit)
+        # IP source
+        self.source_ip_edit = QLineEdit()
+        self.source_ip_edit.setPlaceholderText("ex: 192.168.1.100")
+        form_layout.addRow("IP Source:", self.source_ip_edit)
         
-        # Nom complet
-        self.user_name_edit = QLineEdit()
-        self.user_name_edit.setPlaceholderText("ex: John Doe")
-        form_layout.addRow("Nom Complet:", self.user_name_edit)
+        # IP destination
+        self.dest_ip_edit = QLineEdit()
+        self.dest_ip_edit.setPlaceholderText("ex: 10.0.0.50")
+        form_layout.addRow("IP Destination:", self.dest_ip_edit)
         
-        # Type d'utilisateur
-        self.user_type_combo = QComboBox()
-        for user_type, config in VPN_USER_TYPES.items():
-            self.user_type_combo.addItem(
-                f"{config['icon']} {config['name']} - {config['description']}", 
-                user_type
-            )
-        form_layout.addRow("Type d'Utilisateur:", self.user_type_combo)
+        # Port
+        self.port_edit = QLineEdit()
+        self.port_edit.setPlaceholderText("ex: 80,443 ou 22")
+        form_layout.addRow("Port:", self.port_edit)
         
-        # Description
-        self.description_edit = QTextEdit()
-        self.description_edit.setMaximumHeight(80)
-        self.description_edit.setPlaceholderText("Description optionnelle...")
-        form_layout.addRow("Description:", self.description_edit)
+        # Action
+        self.action_combo = QComboBox()
+        self.action_combo.addItems(["Autoriser", "Bloquer", "Quarantaine"])
+        form_layout.addRow("Action:", self.action_combo)
+        
+        # Raison
+        self.reason_edit = QTextEdit()
+        self.reason_edit.setMaximumHeight(80)
+        self.reason_edit.setPlaceholderText("Raison de cette règle...")
+        form_layout.addRow("Raison:", self.reason_edit)
         
         layout.addLayout(form_layout)
         
@@ -63,11 +93,11 @@ class CreateUserDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
         
-        create_btn = QPushButton("Créer")
-        create_btn.clicked.connect(self.accept)
-        create_btn.setStyleSheet("""
+        add_btn = QPushButton("Ajouter")
+        add_btn.clicked.connect(self.accept)
+        add_btn.setStyleSheet("""
             QPushButton {
-                background-color: #27ae60;
+                background-color: #3498db;
                 color: white;
                 border: none;
                 padding: 8px 16px;
@@ -75,57 +105,58 @@ class CreateUserDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #229954;
+                background-color: #2980b9;
             }
         """)
-        button_layout.addWidget(create_btn)
+        button_layout.addWidget(add_btn)
         
         layout.addLayout(button_layout)
         self.setLayout(layout)
         
-    def get_user_data(self):
+    def get_rule_data(self):
         return {
-            'user_id': self.user_id_edit.text().strip(),
-            'user_name': self.user_name_edit.text().strip(),
-            'user_type': self.user_type_combo.currentData(),
-            'description': self.description_edit.toPlainText().strip()
+            'source_ip': self.source_ip_edit.text().strip(),
+            'dest_ip': self.dest_ip_edit.text().strip(),
+            'port': self.port_edit.text().strip(),
+            'action': self.action_combo.currentText(),
+            'reason': self.reason_edit.toPlainText().strip()
         }
 
-class RevokeDialog(QDialog):
-    def __init__(self, user_name, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Révoquer l'utilisateur VPN")
-        self.setModal(True)
-        self.resize(400, 200)
-        self.user_name = user_name
+class VPNPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.vpn_service = VPNService()
+        self.vpn_users = []
+        self.filtered_users = []
+        self.manual_rules = []
+        self.ping_threads = {}
         self.setup_ui()
+        self.setup_timers()
         
     def setup_ui(self):
         layout = QVBoxLayout()
         
-        # Message de confirmation
-        message = QLabel(f"Êtes-vous sûr de vouloir révoquer l'accès VPN de {self.user_name} ?")
-        message.setStyleSheet("font-size: 14px; margin: 20px;")
-        layout.addWidget(message)
+        # Titre et description
+        title = QLabel("Gestion VPN - Révocation Clés OPNsense")
+        title.setFont(QFont("Arial", 18, QFont.Bold))
+        title.setStyleSheet("color: #2c3e50; margin: 10px;")
+        layout.addWidget(title)
         
-        # Raison de révocation
-        reason_label = QLabel("Raison de la révocation (optionnel):")
-        layout.addWidget(reason_label)
+        desc = QLabel("Utilisateur, IP, statut - Règles manuelles - Actions automatiques si score IA > 0.4")
+        desc.setStyleSheet("color: #7f8c8d; margin-bottom: 20px;")
+        layout.addWidget(desc)
         
-        self.reason_edit = QTextEdit()
-        self.reason_edit.setMaximumHeight(80)
-        self.reason_edit.setPlaceholderText("Ex: Incident de sécurité, départ de l'entreprise...")
-        layout.addWidget(self.reason_edit)
+        # Statut de la connexion
+        self.connection_status = QLabel("Statut de la connexion: Vérification...")
+        self.connection_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        layout.addWidget(self.connection_status)
         
-        # Boutons
-        button_layout = QHBoxLayout()
+        # Contrôles principaux
+        controls_layout = QHBoxLayout()
         
-        cancel_btn = QPushButton("Annuler")
-        cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(cancel_btn)
-        
-        revoke_btn = QPushButton("Révoquer")
-        revoke_btn.clicked.connect(self.accept)
+        # Bouton révocation clés
+        revoke_btn = QPushButton("🔑 Révoquer Clés")
+        revoke_btn.clicked.connect(self.revoke_selected_keys)
         revoke_btn.setStyleSheet("""
             QPushButton {
                 background-color: #e74c3c;
@@ -139,51 +170,14 @@ class RevokeDialog(QDialog):
                 background-color: #c0392b;
             }
         """)
-        button_layout.addWidget(revoke_btn)
+        controls_layout.addWidget(revoke_btn)
         
-        layout.addLayout(button_layout)
-        self.setLayout(layout)
-        
-    def get_reason(self):
-        return self.reason_edit.toPlainText().strip()
-
-class VPNPage(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.vpn_service = VPNService()
-        self.vpn_users = []
-        self.filtered_users = []
-        self.setup_ui()
-        self.setup_timers()
-        
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        
-        # Titre
-        title = QLabel("Gestion VPN - WireGuard")
-        title.setFont(QFont("Arial", 18, QFont.Bold))
-        title.setStyleSheet("color: #2c3e50; margin: 10px;")
-        layout.addWidget(title)
-        
-        # Description
-        desc = QLabel("Gestion des connexions VPN des agents et techniciens via OPNsense/WireGuard")
-        desc.setStyleSheet("color: #7f8c8d; margin-bottom: 20px;")
-        layout.addWidget(desc)
-        
-        # Statut de la connexion
-        self.connection_status = QLabel("Statut de la connexion: Vérification...")
-        self.connection_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
-        layout.addWidget(self.connection_status)
-        
-        # Contrôles de gestion
-        control_layout = QHBoxLayout()
-        
-        # Bouton créer utilisateur
-        create_btn = QPushButton("➕ Créer Utilisateur")
-        create_btn.clicked.connect(self.create_user)
-        create_btn.setStyleSheet("""
+        # Bouton règles manuelles
+        rules_btn = QPushButton("📋 Règles Manuelles")
+        rules_btn.clicked.connect(self.add_manual_rule)
+        rules_btn.setStyleSheet("""
             QPushButton {
-                background-color: #27ae60;
+                background-color: #f39c12;
                 color: white;
                 border: none;
                 padding: 8px 16px;
@@ -191,15 +185,15 @@ class VPNPage(QWidget):
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #229954;
+                background-color: #e67e22;
             }
         """)
-        control_layout.addWidget(create_btn)
+        controls_layout.addWidget(rules_btn)
         
-        # Bouton synchroniser
-        sync_btn = QPushButton("🔄 Synchroniser")
-        sync_btn.clicked.connect(self.sync_connections)
-        sync_btn.setStyleSheet("""
+        # Bouton test connectivité
+        ping_btn = QPushButton("🏓 Test Connectivité")
+        ping_btn.clicked.connect(self.test_connectivity)
+        ping_btn.setStyleSheet("""
             QPushButton {
                 background-color: #3498db;
                 color: white;
@@ -212,53 +206,30 @@ class VPNPage(QWidget):
                 background-color: #2980b9;
             }
         """)
-        control_layout.addWidget(sync_btn)
+        controls_layout.addWidget(ping_btn)
         
-        # Filtres
-        filter_label = QLabel("Filtrer par statut :")
-        filter_label.setStyleSheet("font-weight: bold; margin-left: 20px; margin-right: 10px;")
-        control_layout.addWidget(filter_label)
-        
+        # Filtre par statut
         self.status_filter_combo = QComboBox()
-        self.status_filter_combo.addItem("Tous les statuts", "all")
-        for status_key, status_info in VPN_STATUS.items():
-            self.status_filter_combo.addItem(
-                f"{status_info['icon']} {status_info['name']}", 
-                status_key
-            )
+        self.status_filter_combo.addItems(["Tous", "Connecté", "Déconnecté", "Suspect"])
         self.status_filter_combo.currentTextChanged.connect(self.apply_filters)
-        control_layout.addWidget(self.status_filter_combo)
+        controls_layout.addWidget(QLabel("Statut:"))
+        controls_layout.addWidget(self.status_filter_combo)
         
-        # Filtre par type
-        type_label = QLabel("Type :")
-        type_label.setStyleSheet("font-weight: bold; margin-left: 20px; margin-right: 10px;")
-        control_layout.addWidget(type_label)
-        
-        self.type_filter_combo = QComboBox()
-        self.type_filter_combo.addItem("Tous les types", "all")
-        for user_type, config in VPN_USER_TYPES.items():
-            self.type_filter_combo.addItem(
-                f"{config['icon']} {config['name']}", 
-                user_type
-            )
-        self.type_filter_combo.currentTextChanged.connect(self.apply_filters)
-        control_layout.addWidget(self.type_filter_combo)
-        
-        control_layout.addStretch()
-        layout.addLayout(control_layout)
+        controls_layout.addStretch()
+        layout.addLayout(controls_layout)
         
         # Splitter pour diviser l'écran
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # Partie gauche - Tableau des utilisateurs VPN
+        # Partie gauche - Tableau des utilisateurs
         left_widget = self.create_users_table()
         splitter.addWidget(left_widget)
         
-        # Partie droite - Statistiques et actions
-        right_widget = self.create_actions_section()
+        # Partie droite - Règles et actions
+        right_widget = self.create_rules_section()
         splitter.addWidget(right_widget)
         
-        # Répartition 70% tableau, 30% actions
+        # Répartition 70% tableau, 30% règles
         splitter.setSizes([700, 300])
         layout.addWidget(splitter)
         
@@ -285,23 +256,20 @@ class VPNPage(QWidget):
         
         # Tableau des utilisateurs
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels([
-            "ID", "Nom", "Type", "IP", "Statut", "Dernière Connexion", 
-            "Connexions", "Actions"
+            "Utilisateur", "IP", "Statut", "Score IA", "Connectivité", "Actions"
         ])
         
         # Configuration du tableau
         header = self.table.horizontalHeader()
         if header:
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # ID
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Nom
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Type
-            header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # IP
-            header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Statut
-            header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Dernière Connexion
-            header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Connexions
-            header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Actions
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # Utilisateur
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # IP
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Statut
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Score IA
+            header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Connectivité
+            header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Actions
         
         self.table.setAlternatingRowColors(True)
         self.table.setStyleSheet("""
@@ -323,8 +291,8 @@ class VPNPage(QWidget):
         group.setLayout(layout)
         return group
         
-    def create_actions_section(self):
-        group = QGroupBox("Actions et Statistiques")
+    def create_rules_section(self):
+        group = QGroupBox("Règles Manuelles et Actions")
         group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -342,246 +310,150 @@ class VPNPage(QWidget):
         
         layout = QVBoxLayout()
         
-        # Statistiques générales
-        stats_group = QGroupBox("Résumé")
-        stats_layout = QVBoxLayout()
+        # Liste des règles manuelles
+        rules_label = QLabel("Règles Manuelles:")
+        rules_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        layout.addWidget(rules_label)
+        
+        self.rules_list = QTextEdit()
+        self.rules_list.setMaximumHeight(150)
+        self.rules_list.setReadOnly(True)
+        self.rules_list.setStyleSheet("""
+            QTextEdit {
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                font-family: 'Courier New', monospace;
+                font-size: 11px;
+            }
+        """)
+        layout.addWidget(self.rules_list)
+        
+        # Actions automatiques
+        actions_label = QLabel("Actions Automatiques (Score IA > 0.4):")
+        actions_label.setStyleSheet("font-weight: bold; margin-top: 10px; margin-bottom: 5px;")
+        layout.addWidget(actions_label)
+        
+        self.auto_actions_label = QLabel("Aucune action automatique déclenchée")
+        self.auto_actions_label.setStyleSheet("color: #27ae60; font-style: italic;")
+        layout.addWidget(self.auto_actions_label)
+        
+        # Statistiques
+        stats_label = QLabel("Statistiques:")
+        stats_label.setStyleSheet("font-weight: bold; margin-top: 20px; margin-bottom: 5px;")
+        layout.addWidget(stats_label)
         
         self.total_users_label = QLabel("Total utilisateurs: 0")
-        self.active_users_label = QLabel("Utilisateurs actifs: 0")
-        self.revoked_users_label = QLabel("Utilisateurs révoqués: 0")
-        self.expired_users_label = QLabel("Utilisateurs expirés: 0")
+        self.connected_users_label = QLabel("Utilisateurs connectés: 0")
+        self.suspicious_users_label = QLabel("Utilisateurs suspects: 0")
         
-        for label in [self.total_users_label, self.active_users_label, 
-                     self.revoked_users_label, self.expired_users_label]:
-            label.setStyleSheet("font-size: 12px; margin: 5px;")
-            stats_layout.addWidget(label)
-            
-        stats_group.setLayout(stats_layout)
-        layout.addWidget(stats_group)
+        for label in [self.total_users_label, self.connected_users_label, self.suspicious_users_label]:
+            label.setStyleSheet("margin: 2px 0;")
+            layout.addWidget(label)
         
-        # Actions rapides
-        actions_group = QGroupBox("Actions Rapides")
-        actions_layout = QVBoxLayout()
-        
-        # Bouton vérifier expirations
-        check_expired_btn = QPushButton("⏰ Vérifier Expirations")
-        check_expired_btn.clicked.connect(self.check_expired_users)
-        check_expired_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #f39c12;
-                color: white;
-                border: none;
-                padding: 8px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #e67e22;
-            }
-        """)
-        actions_layout.addWidget(check_expired_btn)
-        
-        # Bouton exporter configurations
-        export_btn = QPushButton("📁 Exporter Configurations")
-        export_btn.clicked.connect(self.export_configurations)
-        export_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #9b59b6;
-                color: white;
-                border: none;
-                padding: 8px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #8e44ad;
-            }
-        """)
-        actions_layout.addWidget(export_btn)
-        
-        actions_group.setLayout(actions_layout)
-        layout.addWidget(actions_group)
-        
-        # Graphique des types d'utilisateurs
-        self.users_figure = Figure(figsize=(4, 3))
-        self.users_canvas = FigureCanvas(self.users_figure)
-        self.users_ax = self.users_figure.add_subplot(111)
-        self.users_ax.set_title("Répartition par Type")
-        
-        layout.addWidget(self.users_canvas)
-        
+        layout.addStretch()
         group.setLayout(layout)
         return group
         
     def setup_timers(self):
         """Configure les timers pour la mise à jour automatique"""
-        # Timer pour le statut des connexions (30 secondes)
-        self.connection_timer = QTimer()
-        self.connection_timer.timeout.connect(self.update_connection_status)
-        self.connection_timer.start(REFRESH_INTERVALS['connection_status'] * 1000)
-        
-        # Timer pour la synchronisation avec OPNsense (5 minutes)
-        self.sync_timer = QTimer()
-        self.sync_timer.timeout.connect(self.sync_connections)
-        self.sync_timer.start(REFRESH_INTERVALS['peer_sync'] * 1000)
-        
-        # Timer pour vérifier les expirations (1 heure)
-        self.expiration_timer = QTimer()
-        self.expiration_timer.timeout.connect(self.check_expired_users)
-        self.expiration_timer.start(REFRESH_INTERVALS['expiration_check'] * 1000)
+        # Timer pour la mise à jour des connexions
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_connection_status)
+        self.update_timer.start(30000)  # 30 secondes
         
         # Première mise à jour
-        self.load_vpn_users()
+        self.update_connection_status()
         
-    def load_vpn_users(self):
-        """Charge la liste des utilisateurs VPN"""
+    def update_connection_status(self):
+        """Met à jour le statut des connexions VPN"""
         try:
-            self.connection_status.setText("Statut de la connexion: Chargement...")
-            self.connection_status.setStyleSheet("color: #f39c12; font-weight: bold;")
-            
-            # Charger les utilisateurs depuis la base de données
-            self.vpn_users = self.vpn_service.get_all_vpn_users()
-            
-            # Appliquer les filtres
-            self.apply_filters()
-            
-            # Mettre à jour les statistiques
-            self.update_statistics()
-            self.update_charts()
-            
-            # Mettre à jour le statut
-            if self.vpn_users:
-                self.connection_status.setText(f"Statut de la connexion: {len(self.vpn_users)} utilisateurs chargés")
+            # Test de connexion
+            if not self.vpn_service.test_connection():
+                self.connection_status.setText("Statut de la connexion: DÉCONNECTÉ")
+                self.connection_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
+                self.simulate_vpn_data()
+            else:
+                self.connection_status.setText("Statut de la connexion: CONNECTÉ")
                 self.connection_status.setStyleSheet("color: #27ae60; font-weight: bold;")
-            else:
-                self.connection_status.setText("Statut de la connexion: Aucun utilisateur trouvé")
-                self.connection_status.setStyleSheet("color: #95a5a6; font-weight: bold;")
+                self.get_real_vpn_data()
                 
+            self.apply_filters()
+            self.update_statistics()
+            self.check_automatic_actions()
+            
         except Exception as e:
-            print(f"Erreur lors du chargement des utilisateurs VPN: {e}")
-            self.connection_status.setText("Statut de la connexion: Erreur de chargement")
+            print(f"Erreur lors de la mise à jour: {e}")
+            self.connection_status.setText("Statut de la connexion: ERREUR")
             self.connection_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
             
-    def create_user(self):
-        """Ouvre le dialogue de création d'utilisateur"""
-        dialog = CreateUserDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
-            user_data = dialog.get_user_data()
-            
-            # Valider les données
-            if not user_data['user_id'] or not user_data['user_name']:
-                QMessageBox.warning(self, "Erreur", "L'ID utilisateur et le nom sont obligatoires")
-                return
-                
-            try:
-                # Créer l'utilisateur VPN
-                new_user = self.vpn_service.create_vpn_user(
-                    user_data['user_id'],
-                    user_data['user_name'],
-                    user_data['user_type'],
-                    user_data['description']
-                )
-                
-                if new_user:
-                    QMessageBox.information(self, "Succès", f"Utilisateur VPN {user_data['user_name']} créé avec succès")
-                    self.load_vpn_users()
-                else:
-                    QMessageBox.warning(self, "Erreur", "Impossible de créer l'utilisateur VPN")
-                    
-            except Exception as e:
-                QMessageBox.critical(self, "Erreur", f"Erreur lors de la création: {str(e)}")
-                
-    def revoke_user(self, vpn_id: int, user_name: str):
-        """Révoque un utilisateur VPN"""
-        dialog = RevokeDialog(user_name, self)
-        if dialog.exec_() == QDialog.Accepted:
-            reason = dialog.get_reason()
-            
-            try:
-                success = self.vpn_service.revoke_vpn_user(vpn_id, reason)
-                
-                if success:
-                    QMessageBox.information(self, "Succès", f"Utilisateur VPN {user_name} révoqué avec succès")
-                    self.load_vpn_users()
-                else:
-                    QMessageBox.warning(self, "Erreur", "Impossible de révoquer l'utilisateur VPN")
-                    
-            except Exception as e:
-                QMessageBox.critical(self, "Erreur", f"Erreur lors de la révocation: {str(e)}")
-                
-    def sync_connections(self):
-        """Synchronise les connexions avec OPNsense"""
+    def get_real_vpn_data(self):
+        """Récupère les vraies données VPN depuis le service"""
         try:
-            self.connection_status.setText("Statut de la connexion: Synchronisation...")
-            self.connection_status.setStyleSheet("color: #f39c12; font-weight: bold;")
+            users_data = self.vpn_service.get_all_users()
+            self.vpn_users = []
             
-            # Mettre à jour le statut des connexions
-            self.vpn_service.update_connection_status()
-            
-            # Recharger les utilisateurs
-            self.load_vpn_users()
-            
-            self.connection_status.setText("Statut de la connexion: Synchronisation terminée")
-            self.connection_status.setStyleSheet("color: #27ae60; font-weight: bold;")
-            
+            for user in users_data:
+                processed_data = {
+                    'user_id': user.get('user_id', 'N/A'),
+                    'ip_address': user.get('ip_address', 'N/A'),
+                    'status': user.get('status', 'Déconnecté'),
+                    'ai_score': user.get('ai_score', 0.0),
+                    'connectivity': user.get('connectivity', 'Inconnu'),
+                    'last_seen': user.get('last_seen', 'N/A')
+                }
+                self.vpn_users.append(processed_data)
+                
         except Exception as e:
-            print(f"Erreur lors de la synchronisation: {e}")
-            self.connection_status.setText("Statut de la connexion: Erreur de synchronisation")
-            self.connection_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
+            print(f"Erreur lors de la récupération des données VPN: {e}")
+            self.simulate_vpn_data()
             
-    def check_expired_users(self):
-        """Vérifie et marque les utilisateurs expirés"""
-        try:
-            self.vpn_service.check_expired_users()
-            self.load_vpn_users()
+    def simulate_vpn_data(self):
+        """Simule des données VPN pour les tests"""
+        import random
+        
+        user_names = ["john.doe", "jane.smith", "admin.user", "tech.support", "dev.team"]
+        ip_ranges = ["192.168.1.", "10.0.0.", "172.16.0."]
+        
+        self.vpn_users = []
+        
+        for i, name in enumerate(user_names):
+            # IP aléatoire
+            ip_base = random.choice(ip_ranges)
+            ip_end = random.randint(100, 254)
+            ip_address = f"{ip_base}{ip_end}"
             
-        except Exception as e:
-            print(f"Erreur lors de la vérification des expirations: {e}")
+            # Statut aléatoire
+            status = random.choice(["Connecté", "Déconnecté", "Suspect"])
             
-    def export_configurations(self):
-        """Exporte les configurations WireGuard"""
-        try:
-            # Demander le répertoire de destination
-            directory = QFileDialog.getExistingDirectory(self, "Sélectionner le répertoire d'export")
-            if not directory:
-                return
-                
-            exported_count = 0
+            # Score IA aléatoire
+            ai_score = round(random.uniform(0.0, 1.0), 3)
             
-            for user in self.vpn_users:
-                if user['status'] == 'active':
-                    config = self.vpn_service.generate_config_file(user['id'])
-                    if config:
-                        filename = f"{user['user_id']}_wireguard.conf"
-                        filepath = f"{directory}/{filename}"
-                        
-                        with open(filepath, 'w') as f:
-                            f.write(config)
-                        exported_count += 1
-                        
-            if exported_count > 0:
-                QMessageBox.information(self, "Succès", f"{exported_count} configurations exportées dans {directory}")
+            # Connectivité
+            if status == "Connecté":
+                connectivity = f"{random.randint(1, 50)}ms"
             else:
-                QMessageBox.warning(self, "Aucune configuration", "Aucune configuration active à exporter")
-                
-        except Exception as e:
-            QMessageBox.critical(self, "Erreur", f"Erreur lors de l'export: {str(e)}")
+                connectivity = "N/A"
+            
+            data = {
+                'user_id': name,
+                'ip_address': ip_address,
+                'status': status,
+                'ai_score': ai_score,
+                'connectivity': connectivity,
+                'last_seen': datetime.now().strftime("%H:%M:%S")
+            }
+            self.vpn_users.append(data)
             
     def apply_filters(self):
-        """Applique les filtres sélectionnés"""
-        self.filtered_users = self.vpn_users.copy()
+        """Applique les filtres de statut"""
+        filter_status = self.status_filter_combo.currentText()
         
-        # Filtre par statut
-        status_filter = self.status_filter_combo.currentData()
-        if status_filter != "all":
-            self.filtered_users = [user for user in self.filtered_users 
-                                 if user['status'] == status_filter]
+        self.filtered_users = []
         
-        # Filtre par type
-        type_filter = self.type_filter_combo.currentData()
-        if type_filter != "all":
-            self.filtered_users = [user for user in self.filtered_users 
-                                 if user['user_type'] == type_filter]
+        for user in self.vpn_users:
+            if filter_status == "Tous" or user['status'] == filter_status:
+                self.filtered_users.append(user)
         
         self.update_table()
         
@@ -590,123 +462,217 @@ class VPNPage(QWidget):
         self.table.setRowCount(len(self.filtered_users))
         
         for row, user in enumerate(self.filtered_users):
-            # ID
-            id_item = QTableWidgetItem(user['user_id'])
-            id_item.setFont(QFont("Arial", 10, QFont.Bold))
-            self.table.setItem(row, 0, id_item)
-            
-            # Nom
-            name_item = QTableWidgetItem(user['user_name'])
-            self.table.setItem(row, 1, name_item)
-            
-            # Type
-            user_type = VPN_USER_TYPES.get(user['user_type'], {})
-            type_item = QTableWidgetItem(f"{user_type.get('icon', '')} {user_type.get('name', user['user_type'])}")
-            self.table.setItem(row, 2, type_item)
+            # Utilisateur
+            user_item = QTableWidgetItem(user['user_id'])
+            self.table.setItem(row, 0, user_item)
             
             # IP
             ip_item = QTableWidgetItem(user['ip_address'])
-            self.table.setItem(row, 3, ip_item)
+            self.table.setItem(row, 1, ip_item)
             
-            # Statut
-            status_info = VPN_STATUS.get(user['status'], {})
-            status_item = QTableWidgetItem(f"{status_info.get('icon', '')} {status_info.get('name', user['status'])}")
-            status_item.setForeground(QColor(status_info.get('color', '#000000')))
-            self.table.setItem(row, 4, status_item)
-            
-            # Dernière connexion
-            last_conn = user.get('last_connection', '')
-            if last_conn:
-                last_conn_item = QTableWidgetItem(last_conn)
+            # Statut avec couleur
+            status_item = QTableWidgetItem(user['status'])
+            if user['status'] == "Connecté":
+                status_item.setBackground(QColor(46, 204, 113))  # Vert
+                status_item.setForeground(QColor(255, 255, 255))
+            elif user['status'] == "Suspect":
+                status_item.setBackground(QColor(231, 76, 60))  # Rouge
+                status_item.setForeground(QColor(255, 255, 255))
             else:
-                last_conn_item = QTableWidgetItem("Jamais")
-            self.table.setItem(row, 5, last_conn_item)
+                status_item.setBackground(QColor(149, 165, 166))  # Gris
+                status_item.setForeground(QColor(255, 255, 255))
+            self.table.setItem(row, 2, status_item)
             
-            # Nombre de connexions
-            conn_count_item = QTableWidgetItem(str(user.get('connection_count', 0)))
-            self.table.setItem(row, 6, conn_count_item)
+            # Score IA avec couleur
+            score_item = QTableWidgetItem(f"{user['ai_score']:.3f}")
+            if user['ai_score'] > 0.4:
+                score_item.setBackground(QColor(231, 76, 60))  # Rouge pour suspect
+                score_item.setForeground(QColor(255, 255, 255))
+            elif user['ai_score'] > 0.2:
+                score_item.setBackground(QColor(243, 156, 18))  # Orange pour attention
+                score_item.setForeground(QColor(255, 255, 255))
+            else:
+                score_item.setBackground(QColor(46, 204, 113))  # Vert pour normal
+                score_item.setForeground(QColor(255, 255, 255))
+            self.table.setItem(row, 3, score_item)
             
-            # Actions
-            actions_widget = QWidget()
-            actions_layout = QHBoxLayout()
-            actions_layout.setContentsMargins(2, 2, 2, 2)
+            # Connectivité
+            connectivity_item = QTableWidgetItem(user['connectivity'])
+            self.table.setItem(row, 4, connectivity_item)
             
-            # Bouton révoquer
-            if user['status'] == 'active':
-                revoke_btn = QPushButton("🚫")
-                revoke_btn.setToolTip("Révoquer l'accès")
-                revoke_btn.setFixedSize(30, 25)
-                revoke_btn.clicked.connect(lambda checked, u=user: self.revoke_user(u['id'], u['user_name']))
-                revoke_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #e74c3c;
-                        color: white;
-                        border: none;
-                        border-radius: 3px;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #c0392b;
-                    }
-                """)
-                actions_layout.addWidget(revoke_btn)
+            # Bouton d'action
+            action_btn = QPushButton("🔑 Révoquer")
+            action_btn.clicked.connect(lambda checked, r=row: self.revoke_user_key(r))
+            action_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e74c3c;
+                    color: white;
+                    border: none;
+                    padding: 4px 8px;
+                    border-radius: 3px;
+                    font-size: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #c0392b;
+                }
+            """)
+            self.table.setCellWidget(row, 5, action_btn)
             
-            actions_layout.addStretch()
-            actions_widget.setLayout(actions_layout)
-            self.table.setCellWidget(row, 7, actions_widget)
+    def revoke_user_key(self, row):
+        """Révoque la clé d'un utilisateur spécifique"""
+        if row < len(self.filtered_users):
+            user = self.filtered_users[row]
+            reply = QMessageBox.question(
+                self, "Confirmation", 
+                f"Révoquer la clé VPN de {user['user_id']} ({user['ip_address']}) ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                try:
+                    # Appel API OPNsense pour révoquer la clé
+                    success = self.vpn_service.revoke_user_key(user['user_id'])
+                    if success:
+                        QMessageBox.information(self, "Succès", f"Clé VPN révoquée pour {user['user_id']}")
+                        self.update_connection_status()  # Rafraîchir les données
+                    else:
+                        QMessageBox.warning(self, "Erreur", "Impossible de révoquer la clé")
+                except Exception as e:
+                    QMessageBox.critical(self, "Erreur", f"Erreur lors de la révocation: {str(e)}")
+                    
+    def revoke_selected_keys(self):
+        """Révoque les clés des utilisateurs sélectionnés"""
+        selected_rows = set(item.row() for item in self.table.selectedItems())
+        
+        if not selected_rows:
+            QMessageBox.information(self, "Information", "Aucun utilisateur sélectionné")
+            return
+            
+        reply = QMessageBox.question(
+            self, "Confirmation", 
+            f"Révoquer les clés VPN de {len(selected_rows)} utilisateur(s) ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            revoked_count = 0
+            for row in selected_rows:
+                if row < len(self.filtered_users):
+                    user = self.filtered_users[row]
+                    try:
+                        success = self.vpn_service.revoke_user_key(user['user_id'])
+                        if success:
+                            revoked_count += 1
+                    except Exception as e:
+                        print(f"Erreur lors de la révocation de {user['user_id']}: {e}")
+                        
+            QMessageBox.information(self, "Résultat", f"{revoked_count} clé(s) révoquée(s) avec succès")
+            self.update_connection_status()
+            
+    def add_manual_rule(self):
+        """Ajoute une règle manuelle"""
+        dialog = ManualRuleDialog(self)
+        if dialog.exec_() == QDialog.DialogCode.Accepted:
+            rule_data = dialog.get_rule_data()
+            
+            # Validation des données
+            if not rule_data['source_ip'] or not rule_data['dest_ip']:
+                QMessageBox.warning(self, "Erreur", "IP source et destination requises")
+                return
+                
+            # Ajouter la règle
+            self.manual_rules.append(rule_data)
+            self.update_rules_display()
+            
+            # Appliquer la règle via l'API OPNsense
+            try:
+                success = self.vpn_service.add_firewall_rule(rule_data)
+                if success:
+                    QMessageBox.information(self, "Succès", "Règle ajoutée avec succès")
+                else:
+                    QMessageBox.warning(self, "Erreur", "Impossible d'ajouter la règle")
+            except Exception as e:
+                QMessageBox.critical(self, "Erreur", f"Erreur lors de l'ajout de la règle: {str(e)}")
+                
+    def update_rules_display(self):
+        """Met à jour l'affichage des règles manuelles"""
+        rules_text = ""
+        for i, rule in enumerate(self.manual_rules, 1):
+            rules_text += f"{i}. {rule['action']} {rule['source_ip']} → {rule['dest_ip']}:{rule['port']}\n"
+            if rule['reason']:
+                rules_text += f"   Raison: {rule['reason']}\n"
+            rules_text += "\n"
+            
+        self.rules_list.setText(rules_text)
+        
+    def test_connectivity(self):
+        """Teste la connectivité ping pour tous les utilisateurs connectés"""
+        connected_users = [user for user in self.vpn_users if user['status'] == "Connecté"]
+        
+        if not connected_users:
+            QMessageBox.information(self, "Information", "Aucun utilisateur connecté à tester")
+            return
+            
+        # Lancer les tests ping en parallèle
+        for user in connected_users:
+            if user['ip_address'] != 'N/A':
+                ping_thread = PingThread(user['ip_address'])
+                ping_thread.ping_result.connect(self.on_ping_result)
+                ping_thread.start()
+                self.ping_threads[user['ip_address']] = ping_thread
+                
+        QMessageBox.information(self, "Test en cours", f"Test de connectivité lancé pour {len(connected_users)} utilisateur(s)")
+        
+    def on_ping_result(self, ip_address, success, response_time):
+        """Appelé quand un test ping se termine"""
+        # Mettre à jour l'utilisateur correspondant
+        for user in self.vpn_users:
+            if user['ip_address'] == ip_address:
+                if success:
+                    user['connectivity'] = response_time
+                else:
+                    user['connectivity'] = "Échec"
+                break
+                
+        # Nettoyer le thread
+        if ip_address in self.ping_threads:
+            self.ping_threads[ip_address].deleteLater()
+            del self.ping_threads[ip_address]
+            
+        # Mettre à jour l'affichage
+        self.apply_filters()
+        
+    def check_automatic_actions(self):
+        """Vérifie et exécute les actions automatiques si score IA > 0.4"""
+        suspicious_users = [user for user in self.vpn_users if user['ai_score'] > 0.4]
+        
+        if suspicious_users:
+            actions_text = f"Actions automatiques déclenchées pour {len(suspicious_users)} utilisateur(s):\n"
+            
+            for user in suspicious_users:
+                actions_text += f"• {user['user_id']} (Score: {user['ai_score']:.3f}) - "
+                
+                # Actions automatiques selon le score
+                if user['ai_score'] > 0.7:
+                    actions_text += "Révocation immédiate + Quarantaine\n"
+                    self.vpn_service.revoke_user_key(user['user_id'])
+                elif user['ai_score'] > 0.5:
+                    actions_text += "Surveillance renforcée\n"
+                else:
+                    actions_text += "Alerte générée\n"
+                    
+            self.auto_actions_label.setText(actions_text)
+            self.auto_actions_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        else:
+            self.auto_actions_label.setText("Aucune action automatique déclenchée")
+            self.auto_actions_label.setStyleSheet("color: #27ae60; font-style: italic;")
             
     def update_statistics(self):
         """Met à jour les statistiques"""
-        stats = self.vpn_service.get_vpn_statistics()
+        total = len(self.vpn_users)
+        connected = len([u for u in self.vpn_users if u['status'] == "Connecté"])
+        suspicious = len([u for u in self.vpn_users if u['ai_score'] > 0.4])
         
-        self.total_users_label.setText(f"Total utilisateurs: {stats.get('total_users', 0)}")
-        self.active_users_label.setText(f"Utilisateurs actifs: {stats.get('active_users', 0)}")
-        self.revoked_users_label.setText(f"Utilisateurs révoqués: {stats.get('revoked_users', 0)}")
-        self.expired_users_label.setText(f"Utilisateurs expirés: {stats.get('expired_users', 0)}")
-        
-    def update_charts(self):
-        """Met à jour les graphiques"""
-        stats = self.vpn_service.get_vpn_statistics()
-        
-        # Graphique des types d'utilisateurs
-        self.users_ax.clear()
-        users_by_type = stats.get('users_by_type', {})
-        
-        if users_by_type:
-            labels = []
-            values = []
-            colors = []
-            
-            for user_type, count in users_by_type.items():
-                user_config = VPN_USER_TYPES.get(user_type, {})
-                labels.append(f"{user_config.get('icon', '')} {user_config.get('name', user_type)}")
-                values.append(count)
-                colors.append('#3498db')  # Couleur uniforme pour les types
-            
-            if labels and values:
-                bars = self.users_ax.bar(labels, values, color=colors)
-                self.users_ax.set_title("Répartition par Type d'Utilisateur")
-                self.users_ax.set_ylabel("Nombre d'utilisateurs")
-                
-                # Rotation des labels pour la lisibilité
-                self.users_ax.tick_params(axis='x', rotation=45)
-                
-                # Ajouter les valeurs sur les barres
-                for bar, value in zip(bars, values):
-                    self.users_ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
-                                    str(value), ha='center', va='bottom')
-                
-                self.users_canvas.draw()
-                
-    def update_connection_status(self):
-        """Met à jour le statut des connexions"""
-        try:
-            # Mettre à jour le statut des connexions
-            self.vpn_service.update_connection_status()
-            
-            # Recharger les utilisateurs si nécessaire
-            if hasattr(self, 'vpn_users'):
-                self.load_vpn_users()
-                
-        except Exception as e:
-            print(f"Erreur lors de la mise à jour du statut des connexions: {e}") 
+        self.total_users_label.setText(f"Total utilisateurs: {total}")
+        self.connected_users_label.setText(f"Utilisateurs connectés: {connected}")
+        self.suspicious_users_label.setText(f"Utilisateurs suspects: {suspicious}") 

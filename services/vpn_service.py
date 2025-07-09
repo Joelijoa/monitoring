@@ -35,6 +35,15 @@ class VPNService:
         # Cache pour les connexions actives
         self.active_connections = {}
         
+        try:
+            self.simulation = not self.test_connection()
+        except Exception:
+            self.simulation = True
+            
+    def test_connection(self):
+        # Méthode factice pour la simulation
+        return False
+
     def init_database(self):
         """Initialise la base de données SQLite"""
         try:

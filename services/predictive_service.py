@@ -446,3 +446,73 @@ class PredictiveService:
             'warning_anomalies': warning,
             'anomaly_types': anomaly_types
         } 
+
+    def test_connection(self) -> bool:
+        """Teste la connexion aux services de données"""
+        try:
+            # Test NetXMS
+            netxms_ok = self.netxms_service.test_connection()
+            
+            # Test Wazuh
+            wazuh_ok = self.wazuh_service.test_connection()
+            
+            return netxms_ok and wazuh_ok
+        except Exception as e:
+            logger.error(f"Erreur lors du test de connexion: {e}")
+            return False
+            
+    def detect_anomalies(self) -> List[Dict]:
+        """Détecte les anomalies avec Isolation Forest"""
+        try:
+            # Collecter les données
+            data = self.collect_data_for_analysis()
+            
+            if not data:
+                return []
+            
+            # Extraire les caractéristiques
+            features = []
+            for data_point in data:
+                feature_vector = self.extract_features(data_point)
+                if feature_vector:
+                    features.append(feature_vector)
+            
+            if not features:
+                return []
+            
+            # Normaliser les caractéristiques
+            features_array = np.array(features)
+            features_scaled = self.scaler.fit_transform(features_array)
+            
+            # Détection avec Isolation Forest
+            anomaly_scores = self.isolation_forest.decision_function(features_scaled)
+            
+            # Convertir les scores (plus le score est bas, plus c'est suspect)
+            anomaly_scores = -anomaly_scores  # Inverser pour avoir des scores positifs pour les anomalies
+            
+            # Créer les résultats
+            anomalies = []
+            for i, data_point in enumerate(data):
+                if i < len(anomaly_scores):
+                    score = anomaly_scores[i]
+                    
+                    # Seuil pour considérer comme anomalie
+                    if score > 0.3:  # Seuil ajustable
+                        anomaly_type = self.determine_anomaly_type(data_point, score)
+                        details = self.get_anomaly_details(data_point, anomaly_type)
+                        
+                        anomaly = {
+                            'equipment': data_point.get('equipment_name', 'N/A'),
+                            'type': anomaly_type or 'Général',
+                            'score': round(score, 3),
+                            'timestamp': datetime.fromtimestamp(data_point['timestamp']).strftime("%Y-%m-%d %H:%M:%S"),
+                            'details': details,
+                            'feedback': 'none'
+                        }
+                        anomalies.append(anomaly)
+            
+            return anomalies
+            
+        except Exception as e:
+            logger.error(f"Erreur lors de la détection d'anomalies: {e}")
+            return [] 

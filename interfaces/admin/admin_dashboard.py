@@ -5,6 +5,10 @@ from monitoring.interfaces.admin.surveillance_page import SurveillancePage
 from monitoring.interfaces.admin.user_activity_page import UserActivityPage
 from monitoring.interfaces.admin.predictive_page import PredictivePage
 from monitoring.interfaces.admin.vpn_page import VPNPage
+from monitoring.interfaces.admin.backup_page import BackupPage
+from monitoring.interfaces.admin.nmap_page import NmapPage
+from monitoring.interfaces.admin.gestion_equipements_page import GestionEquipementsPage
+from monitoring.interfaces.admin.forensic_page import ForensicPage
 
 class AdminDashboard(QWidget):
     def __init__(self):
@@ -24,7 +28,7 @@ class AdminDashboard(QWidget):
         self.buttons = []
         sections = [
             "Surveillance", "Activité Utilisateur", "Analyse Prédictive",
-            "VPN", "Sauvegardes", "Résultats Nmap", "Gestion des Équipements"
+            "VPN", "Sauvegardes", "Résultats Nmap", "Gestion des Équipements", "Analyse Forensic"
         ]
         for section in sections:
             btn = QPushButton(section)
@@ -67,14 +71,25 @@ class AdminDashboard(QWidget):
         self.stack.addWidget(vpn_page)
         self.pages.append(vpn_page)
         
-        # Autres pages
-        for section in sections[4:]:  # Skip les 4 premières sections car déjà ajoutées
-            page = QWidget()
-            layout = QVBoxLayout()
-            layout.addWidget(QLabel(f"Contenu de la section : {section}"))
-            page.setLayout(layout)
-            self.stack.addWidget(page)
-            self.pages.append(page)
+        # Page Sauvegardes spéciale
+        backup_page = BackupPage()
+        self.stack.addWidget(backup_page)
+        self.pages.append(backup_page)
+        
+        # Page Nmap spéciale
+        nmap_page = NmapPage()
+        self.stack.addWidget(nmap_page)
+        self.pages.append(nmap_page)
+        
+        # Page Gestion des Équipements spéciale
+        gestion_equipements_page = GestionEquipementsPage()
+        self.stack.addWidget(gestion_equipements_page)
+        self.pages.append(gestion_equipements_page)
+        
+        # Page Analyse Forensic spéciale
+        forensic_page = ForensicPage()
+        self.stack.addWidget(forensic_page)
+        self.pages.append(forensic_page)
 
         # Connexion des boutons à l'affichage des pages
         for i, btn in enumerate(self.buttons):

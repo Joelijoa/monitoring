@@ -1,16 +1,17 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QTableWidget, QTableWidgetItem, QHeaderView, 
-                             QFrame, QComboBox, QPushButton, QGroupBox,
-                             QProgressBar, QSplitter)
+                             QListWidget, QListWidgetItem, QPushButton, 
+                             QFrame, QComboBox, QGroupBox, QLineEdit,
+                             QSplitter, QFileDialog, QMessageBox, QSpinBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
 import requests
 import json
 from datetime import datetime
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import numpy as np
+import pandas as pd
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
 from monitoring.services.wazuh_service import WazuhService
 from monitoring.config.wazuh_config import FILTER_OPTIONS, REFRESH_INTERVALS, EVENT_TYPES
 
@@ -20,20 +21,21 @@ class UserActivityPage(QWidget):
         self.wazuh_service = WazuhService()
         self.user_activity_data = []
         self.filtered_data = []
+        self.current_page = 0
+        self.events_per_page = 50
         self.setup_ui()
         self.setup_timer()
         
     def setup_ui(self):
         layout = QVBoxLayout()
         
-        # Titre
-        title = QLabel("Activité Utilisateur")
+        # Titre et description
+        title = QLabel("Suivi Actions Utilisateurs/Système")
         title.setFont(QFont("Arial", 18, QFont.Bold))
         title.setStyleSheet("color: #2c3e50; margin: 10px;")
         layout.addWidget(title)
         
-        # Description
-        desc = QLabel("Affiche toutes les actions enregistrées par les utilisateurs et le système")
+        desc = QLabel("Connexions, processus, fichiers via Wazuh - Timeline temps réel")
         desc.setStyleSheet("color: #7f8c8d; margin-bottom: 20px;")
         layout.addWidget(desc)
         
@@ -42,43 +44,29 @@ class UserActivityPage(QWidget):
         self.connection_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
         layout.addWidget(self.connection_status)
         
-        # Contrôles de filtrage
-        filter_layout = QHBoxLayout()
+        # Contrôles de recherche et filtrage
+        controls_layout = QHBoxLayout()
+        
+        # Recherche
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Rechercher dans les événements...")
+        self.search_edit.textChanged.connect(self.apply_filters)
+        controls_layout.addWidget(QLabel("Recherche:"))
+        controls_layout.addWidget(self.search_edit)
         
         # Filtre par type d'événement
-        filter_label = QLabel("Filtrer par :")
-        filter_label.setStyleSheet("font-weight: bold; margin-right: 10px;")
-        filter_layout.addWidget(filter_label)
-        
         self.filter_combo = QComboBox()
-        self.filter_combo.addItem("Tous les événements", "all")
-        self.filter_combo.addItem("Connexions/Déconnexions", "login")
-        self.filter_combo.addItem("Exécution de programmes", "program_execution")
-        self.filter_combo.addItem("Accès aux fichiers", "file_access")
-        self.filter_combo.addItem("Accès réseau", "network_access")
-        self.filter_combo.addItem("Événements système", "system_event")
+        self.filter_combo.addItems(["Tous", "Connexions", "Processus", "Fichiers", "Réseau", "Système"])
         self.filter_combo.currentTextChanged.connect(self.apply_filters)
-        filter_layout.addWidget(self.filter_combo)
+        controls_layout.addWidget(QLabel("Type:"))
+        controls_layout.addWidget(self.filter_combo)
         
-        # Filtre par niveau de risque
-        risk_label = QLabel("Niveau de risque :")
-        risk_label.setStyleSheet("font-weight: bold; margin-left: 20px; margin-right: 10px;")
-        filter_layout.addWidget(risk_label)
-        
-        self.risk_combo = QComboBox()
-        self.risk_combo.addItem("Tous", "all")
-        self.risk_combo.addItem("Normal", "normal")
-        self.risk_combo.addItem("Suspect", "suspicious")
-        self.risk_combo.addItem("Critique", "critical")
-        self.risk_combo.currentTextChanged.connect(self.apply_filters)
-        filter_layout.addWidget(self.risk_combo)
-        
-        # Bouton de rafraîchissement
-        refresh_btn = QPushButton("🔄 Rafraîchir")
-        refresh_btn.clicked.connect(self.refresh_data)
-        refresh_btn.setStyleSheet("""
+        # Boutons d'export
+        export_csv_btn = QPushButton("Export CSV")
+        export_csv_btn.clicked.connect(self.export_csv)
+        export_csv_btn.setStyleSheet("""
             QPushButton {
-                background-color: #3498db;
+                background-color: #27ae60;
                 color: white;
                 border: none;
                 padding: 8px 16px;
@@ -86,33 +74,50 @@ class UserActivityPage(QWidget):
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #2980b9;
+                background-color: #229954;
             }
         """)
-        filter_layout.addWidget(refresh_btn)
+        controls_layout.addWidget(export_csv_btn)
         
-        filter_layout.addStretch()
-        layout.addLayout(filter_layout)
+        export_pdf_btn = QPushButton("Export PDF")
+        export_pdf_btn.clicked.connect(self.export_pdf)
+        export_pdf_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+        """)
+        controls_layout.addWidget(export_pdf_btn)
+        
+        controls_layout.addStretch()
+        layout.addLayout(controls_layout)
         
         # Splitter pour diviser l'écran
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # Partie gauche - Tableau des événements
-        left_widget = self.create_events_table()
+        # Partie gauche - Timeline des événements
+        left_widget = self.create_timeline_section()
         splitter.addWidget(left_widget)
         
-        # Partie droite - Statistiques et graphiques
-        right_widget = self.create_statistics_section()
+        # Partie droite - Actions de sécurité
+        right_widget = self.create_security_actions_section()
         splitter.addWidget(right_widget)
         
-        # Répartition 70% tableau, 30% statistiques
+        # Répartition 70% timeline, 30% actions
         splitter.setSizes([700, 300])
         layout.addWidget(splitter)
         
         self.setLayout(layout)
         
-    def create_events_table(self):
-        group = QGroupBox("Événements Utilisateur")
+    def create_timeline_section(self):
+        group = QGroupBox("Timeline des Événements")
         group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -130,48 +135,63 @@ class UserActivityPage(QWidget):
         
         layout = QVBoxLayout()
         
-        # Tableau des événements
-        self.table = QTableWidget()
-        self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels([
-            "Date/Heure", "Utilisateur", "Type", "Message", "Agent", 
-            "Sévérité", "Score Suspicion", "Niveau Risque"
-        ])
-        
-        # Configuration du tableau
-        header = self.table.horizontalHeader()
-        if header:
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # Date
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Utilisateur
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Type
-            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)           # Message
-            header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Agent
-            header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Sévérité
-            header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Score
-            header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Risque
-        
-        self.table.setAlternatingRowColors(True)
-        self.table.setStyleSheet("""
-            QTableWidget {
-                gridline-color: #bdc3c7;
+        # QListWidget pour la timeline
+        self.timeline_list = QListWidget()
+        self.timeline_list.setStyleSheet("""
+            QListWidget {
                 background-color: white;
-                alternate-background-color: #f8f9fa;
+                border: 1px solid #bdc3c7;
+                border-radius: 4px;
+                font-family: 'Courier New', monospace;
+                font-size: 12px;
             }
-            QHeaderView::section {
-                background-color: #34495e;
-                color: white;
+            QListWidget::item {
                 padding: 8px;
-                border: 1px solid #2c3e50;
-                font-weight: bold;
+                border-bottom: 1px solid #ecf0f1;
+            }
+            QListWidget::item:selected {
+                background-color: #3498db;
+                color: white;
+            }
+            QListWidget::item:hover {
+                background-color: #ecf0f1;
             }
         """)
         
-        layout.addWidget(self.table)
+        layout.addWidget(self.timeline_list)
+        
+        # Contrôles de pagination
+        pagination_layout = QHBoxLayout()
+        
+        self.prev_btn = QPushButton("◀ Précédent")
+        self.prev_btn.clicked.connect(self.previous_page)
+        self.prev_btn.setEnabled(False)
+        pagination_layout.addWidget(self.prev_btn)
+        
+        self.page_info = QLabel("Page 1")
+        pagination_layout.addWidget(self.page_info)
+        
+        self.next_btn = QPushButton("Suivant ▶")
+        self.next_btn.clicked.connect(self.next_page)
+        pagination_layout.addWidget(self.next_btn)
+        
+        pagination_layout.addStretch()
+        
+        # Sélecteur d'événements par page
+        pagination_layout.addWidget(QLabel("Événements par page:"))
+        self.events_per_page_spin = QSpinBox()
+        self.events_per_page_spin.setRange(10, 100)
+        self.events_per_page_spin.setValue(50)
+        self.events_per_page_spin.valueChanged.connect(self.change_events_per_page)
+        pagination_layout.addWidget(self.events_per_page_spin)
+        
+        layout.addLayout(pagination_layout)
+        
         group.setLayout(layout)
         return group
         
-    def create_statistics_section(self):
-        group = QGroupBox("Statistiques et Analyse")
+    def create_security_actions_section(self):
+        group = QGroupBox("Actions de Sécurité")
         group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -189,47 +209,119 @@ class UserActivityPage(QWidget):
         
         layout = QVBoxLayout()
         
-        # Statistiques générales
-        stats_group = QGroupBox("Résumé")
-        stats_layout = QVBoxLayout()
+        # Informations sur l'événement sélectionné
+        self.selected_event_info = QLabel("Sélectionnez un événement pour voir les détails")
+        self.selected_event_info.setWordWrap(True)
+        self.selected_event_info.setStyleSheet("""
+            QLabel {
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                padding: 10px;
+                margin-bottom: 10px;
+            }
+        """)
+        layout.addWidget(self.selected_event_info)
+        
+        # Boutons d'action
+        actions_label = QLabel("Actions disponibles:")
+        actions_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        layout.addWidget(actions_label)
+        
+        # Bouton Isoler IP
+        self.isolate_ip_btn = QPushButton("🚫 Isoler IP")
+        self.isolate_ip_btn.clicked.connect(self.isolate_ip)
+        self.isolate_ip_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                padding: 12px;
+                border-radius: 4px;
+                font-weight: bold;
+                margin-bottom: 8px;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+            }
+        """)
+        self.isolate_ip_btn.setEnabled(False)
+        layout.addWidget(self.isolate_ip_btn)
+        
+        # Bouton Bloquer VPN
+        self.block_vpn_btn = QPushButton("🔒 Bloquer VPN")
+        self.block_vpn_btn.clicked.connect(self.block_vpn)
+        self.block_vpn_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f39c12;
+                color: white;
+                border: none;
+                padding: 12px;
+                border-radius: 4px;
+                font-weight: bold;
+                margin-bottom: 8px;
+            }
+            QPushButton:hover {
+                background-color: #d68910;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+            }
+        """)
+        self.block_vpn_btn.setEnabled(False)
+        layout.addWidget(self.block_vpn_btn)
+        
+        # Bouton Quarantaine
+        self.quarantine_btn = QPushButton("🏥 Mettre en Quarantaine")
+        self.quarantine_btn.clicked.connect(self.quarantine)
+        self.quarantine_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9b59b6;
+                color: white;
+                border: none;
+                padding: 12px;
+                border-radius: 4px;
+                font-weight: bold;
+                margin-bottom: 8px;
+            }
+            QPushButton:hover {
+                background-color: #8e44ad;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+            }
+        """)
+        self.quarantine_btn.setEnabled(False)
+        layout.addWidget(self.quarantine_btn)
+        
+        # Statistiques
+        stats_label = QLabel("Statistiques:")
+        stats_label.setStyleSheet("font-weight: bold; margin-top: 20px; margin-bottom: 5px;")
+        layout.addWidget(stats_label)
         
         self.total_events_label = QLabel("Total événements: 0")
         self.suspicious_events_label = QLabel("Événements suspects: 0")
         self.critical_events_label = QLabel("Événements critiques: 0")
-        self.active_users_label = QLabel("Utilisateurs actifs: 0")
         
-        for label in [self.total_events_label, self.suspicious_events_label, 
-                     self.critical_events_label, self.active_users_label]:
-            label.setStyleSheet("font-size: 12px; margin: 5px;")
-            stats_layout.addWidget(label)
-            
-        stats_group.setLayout(stats_layout)
-        layout.addWidget(stats_group)
+        for label in [self.total_events_label, self.suspicious_events_label, self.critical_events_label]:
+            label.setStyleSheet("margin: 2px 0;")
+            layout.addWidget(label)
         
-        # Graphique des types d'événements
-        self.events_figure = Figure(figsize=(4, 3))
-        self.events_canvas = FigureCanvas(self.events_figure)
-        self.events_ax = self.events_figure.add_subplot(111)
-        self.events_ax.set_title("Types d'Événements")
-        
-        layout.addWidget(self.events_canvas)
-        
-        # Graphique des niveaux de risque
-        self.risk_figure = Figure(figsize=(4, 3))
-        self.risk_canvas = FigureCanvas(self.risk_figure)
-        self.risk_ax = self.risk_figure.add_subplot(111)
-        self.risk_ax.set_title("Niveaux de Risque")
-        
-        layout.addWidget(self.risk_canvas)
-        
+        layout.addStretch()
         group.setLayout(layout)
         return group
         
     def setup_timer(self):
-        """Configure le timer pour rafraîchir les données"""
+        """Configure le timer pour rafraîchir les données toutes les 15 secondes"""
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh_data)
-        self.timer.start(REFRESH_INTERVALS['user_activity'] * 1000)  # Conversion en millisecondes
+        self.timer.start(15000)  # 15 secondes
         self.refresh_data()  # Première récupération
         
     def refresh_data(self):
@@ -249,7 +341,6 @@ class UserActivityPage(QWidget):
                 
             self.apply_filters()
             self.update_statistics()
-            self.update_charts()
         except Exception as e:
             print(f"Erreur lors de la récupération des données: {e}")
             self.connection_status.setText("État de la connexion: ERREUR")
@@ -258,204 +349,349 @@ class UserActivityPage(QWidget):
     def get_real_wazuh_data(self):
         """Récupère les vraies données depuis l'API Wazuh"""
         try:
-            self.user_activity_data = self.wazuh_service.get_all_user_activity()
+            events_data = self.wazuh_service.get_user_activity()
+            self.user_activity_data = []
+            
+            for event in events_data:
+                processed_data = {
+                    'timestamp': event.get('timestamp', ''),
+                    'user': event.get('user', 'N/A'),
+                    'type': event.get('event_type', 'N/A'),
+                    'message': event.get('message', ''),
+                    'agent': event.get('agent', 'N/A'),
+                    'severity': event.get('severity', 'info'),
+                    'ip_address': event.get('ip_address', ''),
+                    'process': event.get('process', ''),
+                    'file': event.get('file', ''),
+                    'risk_score': event.get('risk_score', 0)
+                }
+                self.user_activity_data.append(processed_data)
+                
         except Exception as e:
             print(f"Erreur lors de la récupération des données Wazuh: {e}")
-            # Fallback vers les données simulées
             self.simulate_wazuh_data()
             
     def simulate_wazuh_data(self):
-        """Simule les données de l'API Wazuh pour la démonstration"""
+        """Simule des données d'activité utilisateur pour les tests"""
         import random
+        from datetime import datetime, timedelta
         
-        users = ["admin", "user1", "user2", "john.doe", "jane.smith", "tech_support"]
-        agents = ["SRV-WEB-01", "SRV-DB-01", "PC-USER-01", "PC-USER-02", "LAPTOP-01"]
-        event_types = list(EVENT_TYPES.keys())
+        event_types = [
+            "Connexion", "Déconnexion", "Exécution programme", "Accès fichier",
+            "Connexion réseau", "Modification système", "Tentative d'accès"
+        ]
+        
+        users = ["admin", "user1", "user2", "dev1", "test_user", "guest"]
+        agents = ["PC-001", "PC-002", "Serveur-WEB", "PC-Admin", "Laptop-Dev"]
+        processes = ["chrome.exe", "notepad.exe", "cmd.exe", "explorer.exe", "powershell.exe"]
+        files = ["document.txt", "config.ini", "data.csv", "script.py", "backup.zip"]
         
         self.user_activity_data = []
         current_time = datetime.now()
         
-        for i in range(50):  # Générer 50 événements simulés
+        for i in range(200):  # Générer 200 événements
             # Timestamp aléatoire dans les dernières 24h
-            timestamp = current_time.timestamp() - random.uniform(0, 86400)
+            random_hours = random.uniform(0, 24)
+            event_time = current_time - timedelta(hours=random_hours)
             
-            user = random.choice(users)
             event_type = random.choice(event_types)
+            user = random.choice(users)
             agent = random.choice(agents)
-            severity = random.randint(0, 15)
             
-            # Messages selon le type d'événement
-            messages = {
-                'login': f"Connexion utilisateur {user} sur {agent}",
-                'program_execution': f"Programme {random.choice(['chrome.exe', 'notepad.exe', 'cmd.exe'])} exécuté par {user}",
-                'file_access': f"Accès au fichier {random.choice(['document.txt', 'config.ini', 'data.csv'])} par {user}",
-                'network_access': f"Connexion réseau suspecte depuis {agent} par {user}",
-                'system_event': f"Événement système sur {agent}"
-            }
-            
-            message = messages.get(event_type, f"Événement {event_type} par {user}")
-            
-            # Scores simulés
-            suspicious_score = random.uniform(0, 1)
-            anomaly_score = random.uniform(-0.5, 0.5)
-            
-            # Niveau de risque basé sur les scores
-            if suspicious_score > 0.8 or abs(anomaly_score) > 0.4:
-                risk_level = "critical"
-            elif suspicious_score > 0.5:
-                risk_level = "suspicious"
+            # Générer un message approprié selon le type
+            if event_type == "Connexion":
+                message = f"Connexion utilisateur {user} depuis {agent}"
+                ip_address = f"192.168.1.{random.randint(1, 254)}"
+            elif event_type == "Exécution programme":
+                process = random.choice(processes)
+                message = f"Programme {process} exécuté par {user}"
+                ip_address = ""
+            elif event_type == "Accès fichier":
+                file = random.choice(files)
+                message = f"Accès au fichier {file} par {user}"
+                ip_address = ""
             else:
-                risk_level = "normal"
-                
-            event_data = {
-                'id': f"evt_{i}",
-                'timestamp': timestamp,
+                message = f"Événement {event_type} pour {user}"
+                ip_address = ""
+            
+            # Score de risque basé sur le type d'événement
+            if event_type in ["Tentative d'accès", "Modification système"]:
+                risk_score = random.randint(70, 100)
+                severity = "critical"
+            elif event_type in ["Exécution programme", "Connexion réseau"]:
+                risk_score = random.randint(30, 70)
+                severity = "warning"
+            else:
+                risk_score = random.randint(0, 30)
+                severity = "info"
+            
+            data = {
+                'timestamp': event_time.strftime("%Y-%m-%d %H:%M:%S"),
                 'user': user,
-                'event_type': event_type,
+                'type': event_type,
                 'message': message,
                 'agent': agent,
                 'severity': severity,
-                'suspicious_score': suspicious_score,
-                'anomaly_score': anomaly_score,
-                'risk_level': risk_level,
-                'datetime': datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                'ip_address': ip_address,
+                'process': random.choice(processes) if event_type == "Exécution programme" else "",
+                'file': random.choice(files) if event_type == "Accès fichier" else "",
+                'risk_score': risk_score
             }
+            self.user_activity_data.append(data)
             
-            self.user_activity_data.append(event_data)
-            
-        # Tri par timestamp (plus récent en premier)
+        # Trier par timestamp (plus récent en premier)
         self.user_activity_data.sort(key=lambda x: x['timestamp'], reverse=True)
-        
+                
     def apply_filters(self):
-        """Applique les filtres sélectionnés"""
-        self.filtered_data = self.user_activity_data.copy()
+        """Applique les filtres de recherche et de type"""
+        search_text = self.search_edit.text().lower()
+        filter_type = self.filter_combo.currentText()
         
-        # Filtre par type d'événement
-        event_filter = self.filter_combo.currentData()
-        if event_filter != "all":
-            self.filtered_data = [event for event in self.filtered_data 
-                                if event['event_type'] == event_filter]
+        self.filtered_data = []
         
-        # Filtre par niveau de risque
-        risk_filter = self.risk_combo.currentText().lower()
-        if risk_filter != "tous":
-            self.filtered_data = [event for event in self.filtered_data 
-                                if event['risk_level'] == risk_filter]
+        for event in self.user_activity_data:
+            # Filtre par type
+            type_match = filter_type == "Tous" or event['type'] == filter_type
+            
+            # Filtre par recherche
+            search_match = (search_text == "" or 
+                          search_text in event['user'].lower() or
+                          search_text in event['message'].lower() or
+                          search_text in event['agent'].lower())
+            
+            if type_match and search_match:
+                self.filtered_data.append(event)
         
-        self.update_table()
+        self.current_page = 0
+        self.update_timeline()
+        self.update_pagination_controls()
         
-    def update_table(self):
-        """Met à jour le tableau avec les données filtrées"""
-        self.table.setRowCount(len(self.filtered_data))
+    def update_timeline(self):
+        """Met à jour la timeline avec les événements filtrés"""
+        self.timeline_list.clear()
         
-        for row, event in enumerate(self.filtered_data):
-            # Date/Heure
-            datetime_item = QTableWidgetItem(event['datetime'])
-            self.table.setItem(row, 0, datetime_item)
+        start_idx = self.current_page * self.events_per_page
+        end_idx = start_idx + self.events_per_page
+        page_events = self.filtered_data[start_idx:end_idx]
+        
+        for event in page_events:
+            # Créer un item formaté pour la timeline
+            severity_color = {
+                'critical': '#e74c3c',
+                'warning': '#f39c12', 
+                'info': '#3498db'
+            }.get(event['severity'], '#7f8c8d')
             
-            # Utilisateur
-            user_item = QTableWidgetItem(event['user'])
-            user_item.setFont(QFont("Arial", 10, QFont.Bold))
-            self.table.setItem(row, 1, user_item)
+            # Format de l'item : [Timestamp] [Type] User@Agent: Message
+            item_text = f"[{event['timestamp']}] [{event['type']}] {event['user']}@{event['agent']}: {event['message']}"
             
-            # Type d'événement
-            event_type = EVENT_TYPES.get(event['event_type'], {}).get('name', event['event_type'])
-            type_item = QTableWidgetItem(f"{EVENT_TYPES.get(event['event_type'], {}).get('icon', '')} {event_type}")
-            self.table.setItem(row, 2, type_item)
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, event)  # Stocker les données complètes
             
-            # Message
-            message_item = QTableWidgetItem(event['message'])
-            self.table.setItem(row, 3, message_item)
+            # Couleur selon la sévérité
+            if event['severity'] == 'critical':
+                item.setBackground(QColor(231, 76, 60, 50))  # Rouge transparent
+            elif event['severity'] == 'warning':
+                item.setBackground(QColor(243, 156, 18, 50))  # Orange transparent
             
-            # Agent
-            agent_item = QTableWidgetItem(event['agent'])
-            self.table.setItem(row, 4, agent_item)
+            self.timeline_list.addItem(item)
             
-            # Sévérité
-            severity_item = QTableWidgetItem(str(event['severity']))
-            if event['severity'] >= 10:
-                severity_item.setBackground(QColor(231, 76, 60))
-                severity_item.setForeground(QColor(255, 255, 255))
-            elif event['severity'] >= 5:
-                severity_item.setBackground(QColor(243, 156, 18))
-                severity_item.setForeground(QColor(255, 255, 255))
-            self.table.setItem(row, 5, severity_item)
+        # Connecter la sélection
+        self.timeline_list.itemSelectionChanged.connect(self.on_event_selected)
+        
+    def update_pagination_controls(self):
+        """Met à jour les contrôles de pagination"""
+        total_pages = (len(self.filtered_data) + self.events_per_page - 1) // self.events_per_page
+        
+        self.page_info.setText(f"Page {self.current_page + 1} sur {max(1, total_pages)}")
+        self.prev_btn.setEnabled(self.current_page > 0)
+        self.next_btn.setEnabled(self.current_page < total_pages - 1)
+        
+    def previous_page(self):
+        """Page précédente"""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_timeline()
+            self.update_pagination_controls()
             
-            # Score de suspicion
-            score_item = QTableWidgetItem(f"{event['suspicious_score']:.2f}")
-            if event['suspicious_score'] > 0.8:
-                score_item.setBackground(QColor(231, 76, 60))
-                score_item.setForeground(QColor(255, 255, 255))
-            elif event['suspicious_score'] > 0.5:
-                score_item.setBackground(QColor(243, 156, 18))
-                score_item.setForeground(QColor(255, 255, 255))
-            self.table.setItem(row, 6, score_item)
+    def next_page(self):
+        """Page suivante"""
+        total_pages = (len(self.filtered_data) + self.events_per_page - 1) // self.events_per_page
+        if self.current_page < total_pages - 1:
+            self.current_page += 1
+            self.update_timeline()
+            self.update_pagination_controls()
             
-            # Niveau de risque
-            risk_item = QTableWidgetItem(event['risk_level'].upper())
-            if event['risk_level'] == 'critical':
-                risk_item.setBackground(QColor(231, 76, 60))
-                risk_item.setForeground(QColor(255, 255, 255))
-            elif event['risk_level'] == 'suspicious':
-                risk_item.setBackground(QColor(243, 156, 18))
-                risk_item.setForeground(QColor(255, 255, 255))
-            else:
-                risk_item.setBackground(QColor(46, 204, 113))
-                risk_item.setForeground(QColor(255, 255, 255))
-            self.table.setItem(row, 7, risk_item)
+    def change_events_per_page(self, value):
+        """Change le nombre d'événements par page"""
+        self.events_per_page = value
+        self.current_page = 0
+        self.update_timeline()
+        self.update_pagination_controls()
+        
+    def on_event_selected(self):
+        """Appelé quand un événement est sélectionné"""
+        current_item = self.timeline_list.currentItem()
+        if current_item:
+            event_data = current_item.data(Qt.ItemDataRole.UserRole)
+            self.update_selected_event_info(event_data)
+            self.update_action_buttons(event_data)
+        else:
+            self.selected_event_info.setText("Sélectionnez un événement pour voir les détails")
+            self.disable_action_buttons()
+            
+    def update_selected_event_info(self, event_data):
+        """Met à jour les informations de l'événement sélectionné"""
+        info_text = f"""
+<b>Événement sélectionné:</b><br>
+• <b>Timestamp:</b> {event_data['timestamp']}<br>
+• <b>Utilisateur:</b> {event_data['user']}<br>
+• <b>Type:</b> {event_data['type']}<br>
+• <b>Agent:</b> {event_data['agent']}<br>
+• <b>Message:</b> {event_data['message']}<br>
+• <b>Sévérité:</b> {event_data['severity']}<br>
+• <b>Score de risque:</b> {event_data['risk_score']}<br>
+"""
+        if event_data['ip_address']:
+            info_text += f"• <b>IP:</b> {event_data['ip_address']}<br>"
+        if event_data['process']:
+            info_text += f"• <b>Processus:</b> {event_data['process']}<br>"
+        if event_data['file']:
+            info_text += f"• <b>Fichier:</b> {event_data['file']}<br>"
+            
+        self.selected_event_info.setText(info_text)
+        
+    def update_action_buttons(self, event_data):
+        """Active/désactive les boutons d'action selon l'événement"""
+        has_ip = bool(event_data.get('ip_address'))
+        is_suspicious = event_data['risk_score'] > 50
+        
+        self.isolate_ip_btn.setEnabled(has_ip)
+        self.block_vpn_btn.setEnabled(has_ip and is_suspicious)
+        self.quarantine_btn.setEnabled(is_suspicious)
+        
+    def disable_action_buttons(self):
+        """Désactive tous les boutons d'action"""
+        self.isolate_ip_btn.setEnabled(False)
+        self.block_vpn_btn.setEnabled(False)
+        self.quarantine_btn.setEnabled(False)
+        
+    def isolate_ip(self):
+        """Isole l'IP de l'événement sélectionné"""
+        current_item = self.timeline_list.currentItem()
+        if current_item:
+            event_data = current_item.data(Qt.ItemDataRole.UserRole)
+            ip = event_data.get('ip_address')
+            if ip:
+                QMessageBox.information(self, "Isolation IP", f"IP {ip} isolée avec succès")
+                
+    def block_vpn(self):
+        """Bloque l'accès VPN pour l'IP"""
+        current_item = self.timeline_list.currentItem()
+        if current_item:
+            event_data = current_item.data(Qt.ItemDataRole.UserRole)
+            ip = event_data.get('ip_address')
+            if ip:
+                QMessageBox.information(self, "Blocage VPN", f"Accès VPN bloqué pour {ip}")
+                
+    def quarantine(self):
+        """Met en quarantaine l'utilisateur/équipement"""
+        current_item = self.timeline_list.currentItem()
+        if current_item:
+            event_data = current_item.data(Qt.ItemDataRole.UserRole)
+            user = event_data.get('user')
+            agent = event_data.get('agent')
+            QMessageBox.information(self, "Quarantaine", f"Utilisateur {user} sur {agent} mis en quarantaine")
             
     def update_statistics(self):
         """Met à jour les statistiques"""
-        total_events = len(self.user_activity_data)
-        suspicious_events = len([e for e in self.user_activity_data if e['risk_level'] == 'suspicious'])
-        critical_events = len([e for e in self.user_activity_data if e['risk_level'] == 'critical'])
-        active_users = len(set(e['user'] for e in self.user_activity_data))
+        total = len(self.user_activity_data)
+        suspicious = len([e for e in self.user_activity_data if e['risk_score'] > 50])
+        critical = len([e for e in self.user_activity_data if e['severity'] == 'critical'])
         
-        self.total_events_label.setText(f"Total événements: {total_events}")
-        self.suspicious_events_label.setText(f"Événements suspects: {suspicious_events}")
-        self.critical_events_label.setText(f"Événements critiques: {critical_events}")
-        self.active_users_label.setText(f"Utilisateurs actifs: {active_users}")
+        self.total_events_label.setText(f"Total événements: {total}")
+        self.suspicious_events_label.setText(f"Événements suspects: {suspicious}")
+        self.critical_events_label.setText(f"Événements critiques: {critical}")
         
-    def update_charts(self):
-        """Met à jour les graphiques"""
-        # Graphique des types d'événements
-        self.events_ax.clear()
-        event_counts = {}
-        for event in self.user_activity_data:
-            event_type = event['event_type']
-            event_counts[event_type] = event_counts.get(event_type, 0) + 1
-        
-        if event_counts:
-            labels = [EVENT_TYPES.get(et, {}).get('name', et) for et in event_counts.keys()]
-            # Filtrer les valeurs None
-            labels = [label for label in labels if label is not None]
-            values = list(event_counts.values())
-            colors = ['#3498db', '#e74c3c', '#f39c12', '#27ae60', '#9b59b6']
+    def export_csv(self):
+        """Exporte les données en CSV"""
+        try:
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Exporter en CSV", "user_activity_data.csv", "CSV Files (*.csv)"
+            )
             
-            if labels and values:
-                self.events_ax.pie(values, labels=labels, colors=colors[:len(values)], autopct='%1.1f%%')
-                self.events_ax.set_title("Types d'Événements")
-                self.events_canvas.draw()
-        
-        # Graphique des niveaux de risque
-        self.risk_ax.clear()
-        risk_counts = {}
-        for event in self.user_activity_data:
-            risk_level = event['risk_level']
-            risk_counts[risk_level] = risk_counts.get(risk_level, 0) + 1
-        
-        if risk_counts:
-            labels = list(risk_counts.keys())
-            values = list(risk_counts.values())
-            colors = ['#27ae60', '#f39c12', '#e74c3c']  # Normal, Suspect, Critique
+            if filename:
+                # Préparer les données pour l'export
+                export_data = []
+                for event in self.filtered_data:
+                    export_data.append({
+                        'Timestamp': event['timestamp'],
+                        'Utilisateur': event['user'],
+                        'Type': event['type'],
+                        'Message': event['message'],
+                        'Agent': event['agent'],
+                        'Sévérité': event['severity'],
+                        'Score_Risque': event['risk_score'],
+                        'IP': event.get('ip_address', ''),
+                        'Processus': event.get('process', ''),
+                        'Fichier': event.get('file', '')
+                    })
+                
+                # Créer le DataFrame et exporter
+                df = pd.DataFrame(export_data)
+                df.to_csv(filename, index=False, encoding='utf-8')
+                
+                QMessageBox.information(self, "Export réussi", f"Données exportées vers {filename}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur d'export", f"Erreur lors de l'export: {str(e)}")
             
-            bars = self.risk_ax.bar(labels, values, color=colors[:len(values)])
-            self.risk_ax.set_title("Niveaux de Risque")
-            self.risk_ax.set_ylabel("Nombre d'événements")
+    def export_pdf(self):
+        """Exporte les données en PDF"""
+        try:
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Exporter en PDF", "user_activity_report.pdf", "PDF Files (*.pdf)"
+            )
             
-            # Ajouter les valeurs sur les barres
-            for bar, value in zip(bars, values):
-                self.risk_ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
-                                str(value), ha='center', va='bottom')
-            
-            self.risk_canvas.draw() 
+            if filename:
+                # Créer le document PDF
+                doc = SimpleDocTemplate(filename, pagesize=letter)
+                elements = []
+                
+                # Titre
+                styles = getSampleStyleSheet()
+                title = Paragraph("Rapport d'Activité Utilisateur", styles['Title'])
+                elements.append(title)
+                
+                # Tableau des données
+                table_data = [['Timestamp', 'Utilisateur', 'Type', 'Message', 'Agent', 'Sévérité']]
+                
+                for event in self.filtered_data[:100]:  # Limiter à 100 événements pour le PDF
+                    table_data.append([
+                        event['timestamp'],
+                        event['user'],
+                        event['type'],
+                        event['message'][:50] + "..." if len(event['message']) > 50 else event['message'],
+                        event['agent'],
+                        event['severity']
+                    ])
+                
+                table = Table(table_data)
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 14),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ]))
+                
+                elements.append(table)
+                doc.build(elements)
+                
+                QMessageBox.information(self, "Export réussi", f"Rapport PDF exporté vers {filename}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur d'export", f"Erreur lors de l'export PDF: {str(e)}") 

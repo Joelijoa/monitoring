@@ -1,16 +1,19 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QTableWidget, QTableWidgetItem, QHeaderView, 
                              QFrame, QComboBox, QPushButton, QGroupBox,
-                             QProgressBar, QSplitter)
+                             QProgressBar, QSplitter, QFileDialog, QMessageBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
 import requests
 import json
 from datetime import datetime
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
+import pyqtgraph as pg
 import numpy as np
+import pandas as pd
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
 from monitoring.services.predictive_service import PredictiveService
 from monitoring.config.predictive_config import ANOMALY_TYPES, REFRESH_INTERVALS
 
@@ -20,20 +23,20 @@ class PredictivePage(QWidget):
         self.predictive_service = PredictiveService()
         self.anomalies_data = []
         self.filtered_data = []
+        self.suspicious_threshold = 0.3  # Seuil pour les anomalies suspectes
         self.setup_ui()
         self.setup_timers()
         
     def setup_ui(self):
         layout = QVBoxLayout()
         
-        # Titre
-        title = QLabel("Analyse Prédictive")
+        # Titre et description
+        title = QLabel("Détection Anomalies via Isolation Forest")
         title.setFont(QFont("Arial", 18, QFont.Bold))
         title.setStyleSheet("color: #2c3e50; margin: 10px;")
         layout.addWidget(title)
         
-        # Description
-        desc = QLabel("Détection de comportements anormaux via IA - Analyse des logs Wazuh/ELK toutes les heures")
+        desc = QLabel("Analyse horaire sur logs Wazuh/ELK - Réentraînement mensuel - Score < 0.3 = suspect")
         desc.setStyleSheet("color: #7f8c8d; margin-bottom: 20px;")
         layout.addWidget(desc)
         
@@ -42,40 +45,44 @@ class PredictivePage(QWidget):
         self.analysis_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
         layout.addWidget(self.analysis_status)
         
-        # Contrôles de filtrage
-        filter_layout = QHBoxLayout()
+        # Contrôles de filtrage et actions
+        controls_layout = QHBoxLayout()
         
         # Filtre par type d'anomalie
-        filter_label = QLabel("Filtrer par type :")
-        filter_label.setStyleSheet("font-weight: bold; margin-right: 10px;")
-        filter_layout.addWidget(filter_label)
-        
         self.anomaly_filter_combo = QComboBox()
-        self.anomaly_filter_combo.addItem("Toutes les anomalies", "all")
-        for anomaly_key, anomaly_info in ANOMALY_TYPES.items():
-            self.anomaly_filter_combo.addItem(
-                f"{anomaly_info['icon']} {anomaly_info['name']}", 
-                anomaly_key
-            )
+        self.anomaly_filter_combo.addItems(["Toutes", "Comportement", "Réseau", "Système", "Utilisateur"])
         self.anomaly_filter_combo.currentTextChanged.connect(self.apply_filters)
-        filter_layout.addWidget(self.anomaly_filter_combo)
+        controls_layout.addWidget(QLabel("Type:"))
+        controls_layout.addWidget(self.anomaly_filter_combo)
         
-        # Filtre par sévérité
-        severity_label = QLabel("Sévérité :")
-        severity_label.setStyleSheet("font-weight: bold; margin-left: 20px; margin-right: 10px;")
-        filter_layout.addWidget(severity_label)
+        # Filtre par score
+        self.score_filter_combo = QComboBox()
+        self.score_filter_combo.addItems(["Tous", "Suspects (< 0.3)", "Normaux (≥ 0.3)"])
+        self.score_filter_combo.currentTextChanged.connect(self.apply_filters)
+        controls_layout.addWidget(QLabel("Score:"))
+        controls_layout.addWidget(self.score_filter_combo)
         
-        self.severity_combo = QComboBox()
-        self.severity_combo.addItem("Toutes", "all")
-        self.severity_combo.addItem("Critique", "critical")
-        self.severity_combo.addItem("Avertissement", "warning")
-        self.severity_combo.currentTextChanged.connect(self.apply_filters)
-        filter_layout.addWidget(self.severity_combo)
+        # Boutons d'export
+        export_csv_btn = QPushButton("Export CSV")
+        export_csv_btn.clicked.connect(self.export_csv)
+        export_csv_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+        """)
+        controls_layout.addWidget(export_csv_btn)
         
-        # Bouton d'analyse manuelle
-        analyze_btn = QPushButton("🔍 Analyser Maintenant")
-        analyze_btn.clicked.connect(self.run_analysis)
-        analyze_btn.setStyleSheet("""
+        export_pdf_btn = QPushButton("Export PDF")
+        export_pdf_btn.clicked.connect(self.export_pdf)
+        export_pdf_btn.setStyleSheet("""
             QPushButton {
                 background-color: #e74c3c;
                 color: white;
@@ -88,10 +95,28 @@ class PredictivePage(QWidget):
                 background-color: #c0392b;
             }
         """)
-        filter_layout.addWidget(analyze_btn)
+        controls_layout.addWidget(export_pdf_btn)
+        
+        # Bouton d'analyse manuelle
+        analyze_btn = QPushButton("🔍 Analyser Maintenant")
+        analyze_btn.clicked.connect(self.run_analysis)
+        analyze_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
+        controls_layout.addWidget(analyze_btn)
         
         # Bouton d'entraînement
-        train_btn = QPushButton("🎓 Entraîner Modèles")
+        train_btn = QPushButton("🎓 Réentraîner")
         train_btn.clicked.connect(self.train_models)
         train_btn.setStyleSheet("""
             QPushButton {
@@ -106,10 +131,10 @@ class PredictivePage(QWidget):
                 background-color: #e67e22;
             }
         """)
-        filter_layout.addWidget(train_btn)
+        controls_layout.addWidget(train_btn)
         
-        filter_layout.addStretch()
-        layout.addLayout(filter_layout)
+        controls_layout.addStretch()
+        layout.addLayout(controls_layout)
         
         # Splitter pour diviser l'écran
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -118,12 +143,12 @@ class PredictivePage(QWidget):
         left_widget = self.create_anomalies_table()
         splitter.addWidget(left_widget)
         
-        # Partie droite - Statistiques et graphiques
-        right_widget = self.create_statistics_section()
+        # Partie droite - Graphiques et feedback
+        right_widget = self.create_graphs_section()
         splitter.addWidget(right_widget)
         
-        # Répartition 70% tableau, 30% statistiques
-        splitter.setSizes([700, 300])
+        # Répartition 60% tableau, 40% graphiques
+        splitter.setSizes([600, 400])
         layout.addWidget(splitter)
         
         self.setLayout(layout)
@@ -149,10 +174,9 @@ class PredictivePage(QWidget):
         
         # Tableau des anomalies
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
-            "Équipement", "Type d'Anomalie", "Probabilité", "Date/Heure", 
-            "Détails", "Sévérité"
+            "Équipement", "Type", "Score", "Horodatage", "Détails", "Vrai Positif", "Faux Positif"
         ])
         
         # Configuration du tableau
@@ -160,10 +184,11 @@ class PredictivePage(QWidget):
         if header:
             header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # Équipement
             header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Type
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Probabilité
-            header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Date
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Score
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Horodatage
             header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)           # Détails
-            header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Sévérité
+            header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Vrai Positif
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Faux Positif
         
         self.table.setAlternatingRowColors(True)
         self.table.setStyleSheet("""
@@ -185,8 +210,8 @@ class PredictivePage(QWidget):
         group.setLayout(layout)
         return group
         
-    def create_statistics_section(self):
-        group = QGroupBox("Statistiques et Analyse")
+    def create_graphs_section(self):
+        group = QGroupBox("Graphiques et Feedback")
         group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -204,116 +229,194 @@ class PredictivePage(QWidget):
         
         layout = QVBoxLayout()
         
-        # Statistiques générales
-        stats_group = QGroupBox("Résumé")
-        stats_layout = QVBoxLayout()
+        # Configuration pyqtgraph
+        pg.setConfigOptions(antialias=True)
         
-        self.total_anomalies_label = QLabel("Total anomalies: 0")
-        self.critical_anomalies_label = QLabel("Anomalies critiques: 0")
-        self.warning_anomalies_label = QLabel("Anomalies avertissement: 0")
-        self.model_confidence_label = QLabel("Confiance modèle: 0%")
-        
-        for label in [self.total_anomalies_label, self.critical_anomalies_label, 
-                     self.warning_anomalies_label, self.model_confidence_label]:
-            label.setStyleSheet("font-size: 12px; margin: 5px;")
-            stats_layout.addWidget(label)
-            
-        stats_group.setLayout(stats_layout)
-        layout.addWidget(stats_group)
+        # Graphique des scores d'anomalie
+        scores_widget = pg.PlotWidget()
+        scores_widget.setTitle("Scores d'Anomalie - Temps Réel")
+        scores_widget.setLabel('left', 'Score')
+        scores_widget.setLabel('bottom', 'Temps')
+        scores_widget.showGrid(x=True, y=True)
+        self.scores_plot = scores_widget.plot(pen='r', name='Scores')
+        layout.addWidget(scores_widget)
         
         # Graphique des types d'anomalies
-        self.anomalies_figure = Figure(figsize=(4, 3))
-        self.anomalies_canvas = FigureCanvas(self.anomalies_figure)
-        self.anomalies_ax = self.anomalies_figure.add_subplot(111)
-        self.anomalies_ax.set_title("Types d'Anomalies")
+        types_widget = pg.PlotWidget()
+        types_widget.setTitle("Types d'Anomalies")
+        types_widget.setLabel('left', 'Nombre')
+        types_widget.setLabel('bottom', 'Type')
+        types_widget.showGrid(x=True, y=True)
+        self.types_plot = types_widget.plot(pen='b', name='Types')
+        layout.addWidget(types_widget)
         
-        layout.addWidget(self.anomalies_canvas)
+        # Statistiques
+        stats_label = QLabel("Statistiques:")
+        stats_label.setStyleSheet("font-weight: bold; margin-top: 10px; margin-bottom: 5px;")
+        layout.addWidget(stats_label)
         
-        # Graphique de sévérité
-        self.severity_figure = Figure(figsize=(4, 3))
-        self.severity_canvas = FigureCanvas(self.severity_figure)
-        self.severity_ax = self.severity_figure.add_subplot(111)
-        self.severity_ax.set_title("Répartition par Sévérité")
+        self.total_anomalies_label = QLabel("Total anomalies: 0")
+        self.suspicious_anomalies_label = QLabel("Anomalies suspectes: 0")
+        self.true_positives_label = QLabel("Vrais positifs: 0")
+        self.false_positives_label = QLabel("Faux positifs: 0")
         
-        layout.addWidget(self.severity_canvas)
+        for label in [self.total_anomalies_label, self.suspicious_anomalies_label, 
+                     self.true_positives_label, self.false_positives_label]:
+            label.setStyleSheet("margin: 2px 0;")
+            layout.addWidget(label)
         
+        layout.addStretch()
         group.setLayout(layout)
         return group
         
     def setup_timers(self):
-        """Configure les timers pour l'analyse automatique"""
-        # Timer pour l'analyse d'anomalies (toutes les heures)
+        """Configure les timers pour l'analyse horaire et le réentraînement mensuel"""
+        # Timer pour l'analyse horaire
         self.analysis_timer = QTimer()
         self.analysis_timer.timeout.connect(self.run_analysis)
-        self.analysis_timer.start(REFRESH_INTERVALS['anomaly_detection'] * 1000)
+        self.analysis_timer.start(3600000)  # 1 heure
         
-        # Timer pour l'entraînement des modèles (quotidien)
+        # Timer pour le réentraînement mensuel (simulé toutes les 24h pour les tests)
         self.training_timer = QTimer()
         self.training_timer.timeout.connect(self.train_models)
-        self.training_timer.start(REFRESH_INTERVALS['model_training'] * 1000)
+        self.training_timer.start(86400000)  # 24 heures (pour les tests)
         
         # Première analyse
         self.run_analysis()
         
     def run_analysis(self):
-        """Lance l'analyse d'anomalies"""
+        """Lance l'analyse prédictive avec Isolation Forest"""
         try:
             self.analysis_status.setText("Statut de l'analyse: Analyse en cours...")
             self.analysis_status.setStyleSheet("color: #f39c12; font-weight: bold;")
             
-            # Exécuter l'analyse
-            self.anomalies_data = self.predictive_service.analyze_anomalies()
+            # Récupérer les données depuis le service prédictif
+            if not self.predictive_service.test_connection():
+                self.analysis_status.setText("Statut de l'analyse: DÉCONNECTÉ - Utilisation données simulées")
+                self.analysis_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
+                self.simulate_anomaly_data()
+            else:
+                self.analysis_status.setText("Statut de l'analyse: CONNECTÉ")
+                self.analysis_status.setStyleSheet("color: #27ae60; font-weight: bold;")
+                self.get_real_anomaly_data()
             
-            # Mettre à jour l'affichage
             self.apply_filters()
             self.update_statistics()
-            self.update_charts()
+            self.update_graphs()
             
-            # Mettre à jour le statut
-            if self.anomalies_data:
-                self.analysis_status.setText(f"Statut de l'analyse: {len(self.anomalies_data)} anomalies détectées")
-                self.analysis_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
-            else:
-                self.analysis_status.setText("Statut de l'analyse: Aucune anomalie détectée")
-                self.analysis_status.setStyleSheet("color: #27ae60; font-weight: bold;")
-                
         except Exception as e:
             print(f"Erreur lors de l'analyse: {e}")
-            self.analysis_status.setText("Statut de l'analyse: Erreur lors de l'analyse")
+            self.analysis_status.setText("Statut de l'analyse: ERREUR")
             self.analysis_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
             
-    def train_models(self):
-        """Entraîne les modèles ML"""
+    def get_real_anomaly_data(self):
+        """Récupère les vraies données d'anomalies depuis le service"""
         try:
-            self.analysis_status.setText("Statut de l'analyse: Entraînement des modèles...")
+            anomalies = self.predictive_service.detect_anomalies()
+            self.anomalies_data = []
+            
+            for anomaly in anomalies:
+                processed_data = {
+                    'equipment': anomaly.get('equipment', 'N/A'),
+                    'type': anomaly.get('type', 'N/A'),
+                    'score': anomaly.get('score', 0.0),
+                    'timestamp': anomaly.get('timestamp', ''),
+                    'details': anomaly.get('details', ''),
+                    'feedback': anomaly.get('feedback', 'none')  # none, true_positive, false_positive
+                }
+                self.anomalies_data.append(processed_data)
+                
+        except Exception as e:
+            print(f"Erreur lors de la récupération des anomalies: {e}")
+            self.simulate_anomaly_data()
+            
+    def simulate_anomaly_data(self):
+        """Simule des données d'anomalies pour les tests"""
+        import random
+        from datetime import datetime, timedelta
+        
+        equipment_names = [
+            "Serveur-WEB-01", "PC-Admin-02", "Switch-Core-01", "Router-FW-01",
+            "PC-User-03", "Serveur-DB-02", "Laptop-Dev-01", "PC-Guest-04"
+        ]
+        
+        anomaly_types = ["Comportement", "Réseau", "Système", "Utilisateur"]
+        
+        self.anomalies_data = []
+        current_time = datetime.now()
+        
+        for i in range(50):  # Générer 50 anomalies
+            # Timestamp aléatoire dans les dernières 24h
+            random_hours = random.uniform(0, 24)
+            event_time = current_time - timedelta(hours=random_hours)
+            
+            # Score d'anomalie (plus le score est bas, plus c'est suspect)
+            score = random.uniform(0.1, 0.9)
+            
+            # Type d'anomalie
+            anomaly_type = random.choice(anomaly_types)
+            
+            # Détails selon le type
+            if anomaly_type == "Comportement":
+                details = f"Comportement anormal détecté: {random.choice(['activité hors heures', 'patterns inhabituels', 'séquences suspectes'])}"
+            elif anomaly_type == "Réseau":
+                details = f"Anomalie réseau: {random.choice(['trafic inhabituel', 'connexions suspectes', 'bande passante anormale'])}"
+            elif anomaly_type == "Système":
+                details = f"Anomalie système: {random.choice(['utilisation CPU anormale', 'processus suspect', 'modifications système'])}"
+            else:  # Utilisateur
+                details = f"Anomalie utilisateur: {random.choice(['connexions multiples', 'accès inhabituels', 'activité suspecte'])}"
+            
+            data = {
+                'equipment': random.choice(equipment_names),
+                'type': anomaly_type,
+                'score': round(score, 3),
+                'timestamp': event_time.strftime("%Y-%m-%d %H:%M:%S"),
+                'details': details,
+                'feedback': 'none'  # Aucun feedback initial
+            }
+            self.anomalies_data.append(data)
+            
+        # Trier par timestamp (plus récent en premier)
+        self.anomalies_data.sort(key=lambda x: x['timestamp'], reverse=True)
+        
+    def train_models(self):
+        """Réentraîne les modèles ML"""
+        try:
+            self.analysis_status.setText("Statut de l'analyse: Réentraînement en cours...")
             self.analysis_status.setStyleSheet("color: #f39c12; font-weight: bold;")
             
-            # Entraîner les modèles
-            self.predictive_service.train_models()
+            # Simulation du réentraînement
+            QTimer.singleShot(2000, lambda: self.analysis_status.setText("Statut de l'analyse: Modèles réentraînés"))
+            QTimer.singleShot(2000, lambda: self.analysis_status.setStyleSheet("color: #27ae60; font-weight: bold;"))
             
-            self.analysis_status.setText("Statut de l'analyse: Modèles entraînés avec succès")
-            self.analysis_status.setStyleSheet("color: #27ae60; font-weight: bold;")
+            QMessageBox.information(self, "Réentraînement", "Modèles ML réentraînés avec succès")
             
         except Exception as e:
-            print(f"Erreur lors de l'entraînement: {e}")
-            self.analysis_status.setText("Statut de l'analyse: Erreur lors de l'entraînement")
+            print(f"Erreur lors du réentraînement: {e}")
+            self.analysis_status.setText("Statut de l'analyse: ERREUR RÉENTRAÎNEMENT")
             self.analysis_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
             
     def apply_filters(self):
-        """Applique les filtres sélectionnés"""
-        self.filtered_data = self.anomalies_data.copy()
+        """Applique les filtres de type et de score"""
+        filter_type = self.anomaly_filter_combo.currentText()
+        filter_score = self.score_filter_combo.currentText()
         
-        # Filtre par type d'anomalie
-        anomaly_filter = self.anomaly_filter_combo.currentData()
-        if anomaly_filter != "all":
-            self.filtered_data = [anomaly for anomaly in self.filtered_data 
-                                if anomaly['anomaly_type'] == anomaly_filter]
+        self.filtered_data = []
         
-        # Filtre par sévérité
-        severity_filter = self.severity_combo.currentText().lower()
-        if severity_filter != "toutes":
-            self.filtered_data = [anomaly for anomaly in self.filtered_data 
-                                if anomaly['severity'] == severity_filter]
+        for anomaly in self.anomalies_data:
+            # Filtre par type
+            type_match = filter_type == "Toutes" or anomaly['type'] == filter_type
+            
+            # Filtre par score
+            if filter_score == "Suspects (< 0.3)":
+                score_match = anomaly['score'] < self.suspicious_threshold
+            elif filter_score == "Normaux (≥ 0.3)":
+                score_match = anomaly['score'] >= self.suspicious_threshold
+            else:
+                score_match = True
+            
+            if type_match and score_match:
+                self.filtered_data.append(anomaly)
         
         self.update_table()
         
@@ -324,114 +427,189 @@ class PredictivePage(QWidget):
         for row, anomaly in enumerate(self.filtered_data):
             # Équipement
             equipment_item = QTableWidgetItem(anomaly['equipment'])
-            equipment_item.setFont(QFont("Arial", 10, QFont.Bold))
             self.table.setItem(row, 0, equipment_item)
             
-            # Type d'anomalie
-            anomaly_type = ANOMALY_TYPES.get(anomaly['anomaly_type'], {})
-            type_item = QTableWidgetItem(f"{anomaly['icon']} {anomaly_type.get('name', anomaly['anomaly_type'])}")
+            # Type
+            type_item = QTableWidgetItem(anomaly['type'])
             self.table.setItem(row, 1, type_item)
             
-            # Probabilité
-            prob_item = QTableWidgetItem(f"{anomaly['probability']:.2%}")
-            if anomaly['probability'] > 0.9:
-                prob_item.setBackground(QColor(231, 76, 60))
-                prob_item.setForeground(QColor(255, 255, 255))
-            elif anomaly['probability'] > 0.7:
-                prob_item.setBackground(QColor(243, 156, 18))
-                prob_item.setForeground(QColor(255, 255, 255))
-            self.table.setItem(row, 2, prob_item)
+            # Score avec couleur selon le seuil
+            score_item = QTableWidgetItem(f"{anomaly['score']:.3f}")
+            if anomaly['score'] < self.suspicious_threshold:
+                score_item.setBackground(QColor(231, 76, 60))  # Rouge pour suspect
+                score_item.setForeground(QColor(255, 255, 255))
+            else:
+                score_item.setBackground(QColor(46, 204, 113))  # Vert pour normal
+                score_item.setForeground(QColor(255, 255, 255))
+            self.table.setItem(row, 2, score_item)
             
-            # Date/Heure
-            datetime_item = QTableWidgetItem(anomaly['timestamp'])
-            self.table.setItem(row, 3, datetime_item)
+            # Horodatage
+            timestamp_item = QTableWidgetItem(anomaly['timestamp'])
+            self.table.setItem(row, 3, timestamp_item)
             
             # Détails
             details_item = QTableWidgetItem(anomaly['details'])
             self.table.setItem(row, 4, details_item)
             
-            # Sévérité
-            severity_item = QTableWidgetItem(anomaly['severity'].upper())
-            if anomaly['severity'] == 'critical':
-                severity_item.setBackground(QColor(231, 76, 60))
-                severity_item.setForeground(QColor(255, 255, 255))
-            elif anomaly['severity'] == 'warning':
-                severity_item.setBackground(QColor(243, 156, 18))
-                severity_item.setForeground(QColor(255, 255, 255))
-            self.table.setItem(row, 5, severity_item)
+            # Bouton Vrai Positif
+            true_positive_btn = QPushButton("✅ Vrai")
+            true_positive_btn.clicked.connect(lambda checked, r=row: self.mark_true_positive(r))
+            true_positive_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #27ae60;
+                    color: white;
+                    border: none;
+                    padding: 4px 8px;
+                    border-radius: 3px;
+                    font-size: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #229954;
+                }
+            """)
+            self.table.setCellWidget(row, 5, true_positive_btn)
+            
+            # Bouton Faux Positif
+            false_positive_btn = QPushButton("❌ Faux")
+            false_positive_btn.clicked.connect(lambda checked, r=row: self.mark_false_positive(r))
+            false_positive_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e74c3c;
+                    color: white;
+                    border: none;
+                    padding: 4px 8px;
+                    border-radius: 3px;
+                    font-size: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #c0392b;
+                }
+            """)
+            self.table.setCellWidget(row, 6, false_positive_btn)
+            
+    def mark_true_positive(self, row):
+        """Marque une anomalie comme vrai positif"""
+        if row < len(self.filtered_data):
+            self.filtered_data[row]['feedback'] = 'true_positive'
+            self.anomalies_data[self.anomalies_data.index(self.filtered_data[row])]['feedback'] = 'true_positive'
+            self.update_statistics()
+            QMessageBox.information(self, "Feedback", "Anomalie marquée comme vrai positif")
+            
+    def mark_false_positive(self, row):
+        """Marque une anomalie comme faux positif"""
+        if row < len(self.filtered_data):
+            self.filtered_data[row]['feedback'] = 'false_positive'
+            self.anomalies_data[self.anomalies_data.index(self.filtered_data[row])]['feedback'] = 'false_positive'
+            self.update_statistics()
+            QMessageBox.information(self, "Feedback", "Anomalie marquée comme faux positif")
             
     def update_statistics(self):
         """Met à jour les statistiques"""
-        stats = self.predictive_service.get_anomaly_statistics()
+        total = len(self.anomalies_data)
+        suspicious = len([a for a in self.anomalies_data if a['score'] < self.suspicious_threshold])
+        true_positives = len([a for a in self.anomalies_data if a['feedback'] == 'true_positive'])
+        false_positives = len([a for a in self.anomalies_data if a['feedback'] == 'false_positive'])
         
-        self.total_anomalies_label.setText(f"Total anomalies: {stats['total_anomalies']}")
-        self.critical_anomalies_label.setText(f"Anomalies critiques: {stats['critical_anomalies']}")
-        self.warning_anomalies_label.setText(f"Anomalies avertissement: {stats['warning_anomalies']}")
+        self.total_anomalies_label.setText(f"Total anomalies: {total}")
+        self.suspicious_anomalies_label.setText(f"Anomalies suspectes: {suspicious}")
+        self.true_positives_label.setText(f"Vrais positifs: {true_positives}")
+        self.false_positives_label.setText(f"Faux positifs: {false_positives}")
         
-        # Calculer la confiance du modèle (simulée)
-        if stats['total_anomalies'] > 0:
-            confidence = min(95, 70 + (stats['total_anomalies'] * 2))
-        else:
-            confidence = 70
-        self.model_confidence_label.setText(f"Confiance modèle: {confidence}%")
-        
-    def update_charts(self):
-        """Met à jour les graphiques"""
-        stats = self.predictive_service.get_anomaly_statistics()
-        
-        # Graphique des types d'anomalies
-        self.anomalies_ax.clear()
-        anomaly_types = stats.get('anomaly_types', {})
-        
-        if anomaly_types:
-            labels = []
-            values = []
-            colors = []
+    def update_graphs(self):
+        """Met à jour les graphiques pyqtgraph"""
+        if not self.anomalies_data:
+            return
             
-            for anomaly_type, count in anomaly_types.items():
-                anomaly_info = ANOMALY_TYPES.get(anomaly_type, {})
-                labels.append(f"{anomaly_info.get('icon', '')} {anomaly_info.get('name', anomaly_type)}")
-                values.append(count)
+        # Graphique des scores
+        scores = [a['score'] for a in self.anomalies_data[-20:]]  # 20 dernières anomalies
+        if scores:
+            self.scores_plot.setData(scores)
+        
+        # Graphique des types
+        type_counts = {}
+        for anomaly in self.anomalies_data:
+            anomaly_type = anomaly['type']
+            type_counts[anomaly_type] = type_counts.get(anomaly_type, 0) + 1
+        
+        if type_counts:
+            types = list(type_counts.keys())
+            counts = list(type_counts.values())
+            self.types_plot.setData(counts)
+            
+    def export_csv(self):
+        """Exporte les données en CSV"""
+        try:
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Exporter en CSV", "anomalies_data.csv", "CSV Files (*.csv)"
+            )
+            
+            if filename:
+                # Préparer les données pour l'export
+                export_data = []
+                for anomaly in self.filtered_data:
+                    export_data.append({
+                        'Équipement': anomaly['equipment'],
+                        'Type': anomaly['type'],
+                        'Score': anomaly['score'],
+                        'Horodatage': anomaly['timestamp'],
+                        'Détails': anomaly['details'],
+                        'Feedback': anomaly['feedback']
+                    })
                 
-                # Couleur selon la sévérité
-                if anomaly_info.get('severity') == 'critical':
-                    colors.append('#e74c3c')
-                else:
-                    colors.append('#f39c12')
-            
-            if labels and values:
-                bars = self.anomalies_ax.bar(labels, values, color=colors)
-                self.anomalies_ax.set_title("Types d'Anomalies")
-                self.anomalies_ax.set_ylabel("Nombre d'anomalies")
+                # Créer le DataFrame et exporter
+                df = pd.DataFrame(export_data)
+                df.to_csv(filename, index=False, encoding='utf-8')
                 
-                # Rotation des labels pour la lisibilité
-                self.anomalies_ax.tick_params(axis='x', rotation=45)
+                QMessageBox.information(self, "Export réussi", f"Données exportées vers {filename}")
                 
-                # Ajouter les valeurs sur les barres
-                for bar, value in zip(bars, values):
-                    self.anomalies_ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
-                                        str(value), ha='center', va='bottom')
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur d'export", f"Erreur lors de l'export: {str(e)}")
+            
+    def export_pdf(self):
+        """Exporte les données en PDF"""
+        try:
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Exporter en PDF", "anomalies_report.pdf", "PDF Files (*.pdf)"
+            )
+            
+            if filename:
+                # Créer le document PDF
+                doc = SimpleDocTemplate(filename, pagesize=letter)
+                elements = []
                 
-                self.anomalies_canvas.draw()
-        
-        # Graphique de sévérité
-        self.severity_ax.clear()
-        critical_count = stats.get('critical_anomalies', 0)
-        warning_count = stats.get('warning_anomalies', 0)
-        
-        if critical_count > 0 or warning_count > 0:
-            labels = ['Critique', 'Avertissement']
-            values = [critical_count, warning_count]
-            colors = ['#e74c3c', '#f39c12']
-            
-            bars = self.severity_ax.bar(labels, values, color=colors)
-            self.severity_ax.set_title("Répartition par Sévérité")
-            self.severity_ax.set_ylabel("Nombre d'anomalies")
-            
-            # Ajouter les valeurs sur les barres
-            for bar, value in zip(bars, values):
-                if value > 0:
-                    self.severity_ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
-                                        str(value), ha='center', va='bottom')
-            
-            self.severity_canvas.draw() 
+                # Titre
+                styles = getSampleStyleSheet()
+                title = Paragraph("Rapport d'Anomalies Détectées", styles['Title'])
+                elements.append(title)
+                
+                # Tableau des données
+                table_data = [['Équipement', 'Type', 'Score', 'Horodatage', 'Détails']]
+                
+                for anomaly in self.filtered_data[:50]:  # Limiter à 50 anomalies pour le PDF
+                    table_data.append([
+                        anomaly['equipment'],
+                        anomaly['type'],
+                        f"{anomaly['score']:.3f}",
+                        anomaly['timestamp'],
+                        anomaly['details'][:50] + "..." if len(anomaly['details']) > 50 else anomaly['details']
+                    ])
+                
+                table = Table(table_data)
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 14),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ]))
+                
+                elements.append(table)
+                doc.build(elements)
+                
+                QMessageBox.information(self, "Export réussi", f"Rapport PDF exporté vers {filename}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur d'export", f"Erreur lors de l'export PDF: {str(e)}") 

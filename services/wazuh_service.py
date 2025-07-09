@@ -36,6 +36,11 @@ class WazuhService:
         # Initialisation des modèles
         self.initialize_ml_models()
         
+        try:
+            self.simulation = not self.test_connection()
+        except Exception:
+            self.simulation = True
+            
     def initialize_ml_models(self):
         """Initialise ou charge les modèles ML"""
         try:
@@ -100,6 +105,10 @@ class WazuhService:
         """
         Récupère l'activité utilisateur spécifique
         """
+        if self.simulation:
+            return [
+                {'timestamp': '2024-01-01T12:00:00', 'user': 'simu', 'type': 'login', 'message': 'Connexion simulée', 'agent': 'PC-SIMU', 'severity': 1, 'score': 0.1, 'risk': 'Normal'}
+            ]
         try:
             # Filtres pour les événements utilisateur
             user_filters = [
@@ -321,16 +330,37 @@ class WazuhService:
             logger.error(f"Erreur lors de l'entraînement des modèles ML: {e}")
             
     def test_connection(self) -> bool:
-        """
-        Teste la connexion à l'API Wazuh
-        """
+        """Teste la connexion à l'API Wazuh"""
         try:
             response = self.session.get(
                 f"{self.api_url}/status",
                 timeout=self.timeout
             )
-            response.raise_for_status()
-            return True
+            return response.status_code == 200
         except requests.exceptions.RequestException as e:
             logger.error(f"Erreur de connexion à l'API Wazuh: {e}")
+            return False
+            
+    def send_custom_alert(self, alert_type: str, message: str) -> bool:
+        """Envoie une alerte personnalisée via l'API Wazuh"""
+        if self.simulation:
+            logger.warning(f"Simulation activée. Ne pas envoyer l'alerte Wazuh de type '{alert_type}' avec le message '{message}'.")
+            return False
+        try:
+            alert_data = {
+                'type': alert_type,
+                'message': message,
+                'timestamp': datetime.now().isoformat(),
+                'source': 'backup_service'
+            }
+            
+            response = self.session.post(
+                f"{self.api_url}/alerts",
+                json=alert_data,
+                timeout=self.timeout
+            )
+            
+            return response.status_code == 200
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur lors de l'envoi de l'alerte Wazuh: {e}")
             return False 
